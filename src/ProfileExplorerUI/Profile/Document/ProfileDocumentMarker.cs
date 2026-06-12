@@ -463,7 +463,7 @@ public class ProfileDocumentMarker {
     }
 
     foreach (var callsite in node.CallSites.Values) {
-      if (!FunctionProfileData.TryFindElementForOffset(metadataTag, callsite.RVA - profile_.FunctionDebugInfo.RVA,
+      if (!FunctionProfileDataProcessing.TryFindElementForOffset(metadataTag, callsite.RVA - profile_.FunctionDebugInfo.RVA,
                                                        irInfo_.IR, out var element)) {
         continue;
       }

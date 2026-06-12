@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 using System.Reflection;
 using System.Text;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Profiling;
 using ProfileExplorer.Profiling.Symbols;
 
@@ -19,7 +20,7 @@ internal class AssemblyAnnotator {
     IReadOnlyList<DisassembledInstruction> instructions,
     IReadOnlyDictionary<long, TimeSpan> instructionWeights,
     long functionRva,
-    IDebugInfoProvider? debugInfo,
+    ISymbolDebugInfo? debugInfo,
     FunctionDebugInfo? funcDebugInfo,
     ProcessorArchitecture architecture,
     double minHotLinePercent,
@@ -138,8 +139,3 @@ internal class AssemblyAnnotator {
     return best;
   }
 }
-
-/// <summary>
-/// A raw disassembled instruction (before annotation).
-/// </summary>
-internal record DisassembledInstruction(long Address, long Rva, string Text, int Size);

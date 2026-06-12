@@ -26,4 +26,8 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\ProfileExplorer.Profiling\ProfileExplorer.Profiling.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -3,6 +3,7 @@
 using System.Reflection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ProfileExplorer.Profiling.Disassembly;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 using ProfileExplorer.Profiling.Tests.Helpers;
 
@@ -81,30 +82,30 @@ public class FunctionProfilerEndToEndTests {
     Assert.IsTrue(profiles.Count > 0, "Should have at least one function profile.");
 
     // Find the target function's profile.
-    var profile = profiles.FirstOrDefault(p => p.FunctionName.Contains("SortByParameterGroups"));
-    Assert.IsNotNull(profile, "Should have a profile for SortByParameterGroups.");
-    Assert.IsTrue(profile.ExclusiveWeight.TotalMilliseconds >= sampleCount * 0.9,
-      $"Most samples should be attributed to this function. Got {profile.ExclusiveWeight.TotalMilliseconds}ms, expected ~{sampleCount}ms.");
+    var profile = profiles.FirstOrDefault(p => p.Key.FunctionName.Contains("SortByParameterGroups"));
+    Assert.IsNotNull(profile.Value, "Should have a profile for SortByParameterGroups.");
+    Assert.IsTrue(profile.Value.ExclusiveWeight.TotalMilliseconds >= sampleCount * 0.9,
+      $"Most samples should be attributed to this function. Got {profile.Value.ExclusiveWeight.TotalMilliseconds}ms, expected ~{sampleCount}ms.");
 
-    // Step 4: Disassemble the function (requires Capstone).
-    if (!Disassembler.CapstoneAvailable) {
-      // Capstone not installed — verify profiling worked and skip assembly steps.
-      Assert.IsTrue(profile.InstructionWeights.Count > 0, "Should have instruction weights.");
+    // Step 4: Disassemble the function with the mature capstone disassembler.
+    using var disassembler = Disassembler.CreateForBinary(DllPath, pdbProvider, null);
+
+    if (disassembler == null) {
+      // Binary couldn't be opened — verify profiling worked and skip assembly steps.
+      Assert.IsTrue(profile.Value.InstructionWeight.Count > 0, "Should have instruction weights.");
       return;
     }
 
-    using var disassembler = new Disassembler();
-    var instructions = disassembler.DisassembleFunction(
-      DllPath, profile.FunctionRva, profile.FunctionSize,
-      moduleBase, ProcessorArchitecture.Amd64, pdbProvider);
+    long targetRva = profile.Value.FunctionDebugInfo.RVA;
+    var instructions = disassembler.DisassembleToList(targetRva, (int)profile.Value.FunctionDebugInfo.Size);
 
     Assert.IsTrue(instructions.Count > 0,
-      $"Should disassemble {profile.FunctionName} (Size={profile.FunctionSize}).");
+      $"Should disassemble {profile.Key.FunctionName} (Size={profile.Value.FunctionDebugInfo.Size}).");
 
     // Step 5: Annotate with timing data.
-    var funcDebugInfo = pdbProvider.FindFunctionByRVA(profile.FunctionRva);
+    var funcDebugInfo = pdbProvider.FindFunctionByRVA(targetRva);
     var annotated = AssemblyAnnotator.Annotate(
-      instructions, profile.InstructionWeights, profile.FunctionRva,
+      instructions, profile.Value.InstructionWeight, targetRva,
       pdbProvider, funcDebugInfo, ProcessorArchitecture.Amd64,
       minHotLinePercent: 1.0, maxHotLines: 10);
 
@@ -187,11 +188,12 @@ public class FunctionProfilerEndToEndTests {
     var profiles = aggregator.Build();
     Assert.AreEqual(2, profiles.Count, "Should have exactly 2 function profiles.");
 
-    var p1 = profiles.First(p => p.FunctionName == func1.Name);
-    var p2 = profiles.First(p => p.FunctionName == func2.Name);
+    double total = aggregator.TotalWeight.TotalMilliseconds;
+    var p1 = profiles.First(p => p.Key.FunctionName == func1.Name);
+    var p2 = profiles.First(p => p.Key.FunctionName == func2.Name);
 
-    Assert.AreEqual(30.0, p1.ExclusivePercent, 0.1);
-    Assert.AreEqual(70.0, p2.ExclusivePercent, 0.1);
+    Assert.AreEqual(30.0, p1.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
+    Assert.AreEqual(70.0, p2.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
   }
 }
 

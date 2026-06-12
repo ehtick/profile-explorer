@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using ProfileExplorer.Core;
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Core.Profile.ETW;
@@ -84,7 +85,7 @@ public static class ProfileSession
 
     // Clear static resolution caches so each trace starts fresh.
     PDBDebugInfoProvider.ClearResolvedCache();
-    PEBinaryInfoProvider.ClearResolvedCache();
+    BinaryFileLocator.ClearResolvedCache();
   }
 }
 
@@ -386,7 +387,7 @@ public static class ProfileTools
       double totalPct = totalWeightMs > 0 ? data.Weight.TotalMilliseconds / totalWeightMs * 100 : 0;
       return new
       {
-        Name = ResolveFunctionName(func),
+        Name = ResolveFunctionName(profile, func),
         ModuleName = func.ModuleName ?? "Unknown",
         SelfTimePercentage = Math.Round(selfPct, 2),
         TotalTimePercentage = Math.Round(totalPct, 2),
@@ -496,7 +497,7 @@ public static class ProfileTools
     if (match == null)
       return Error("GetFunctionAssembly", $"Function '{functionName}' not found");
 
-    var data = profile.FunctionProfiles[match];
+    var data = profile.GetFunctionProfile(match);
     var debugInfo = data.FunctionDebugInfo;
 
     // Try to resolve source lines via the provider's debug info
@@ -627,7 +628,7 @@ public static class ProfileTools
     {
       Action = "GetFunctionAssembly",
       Status = "Success",
-      FunctionName = ResolveFunctionName(match),
+      FunctionName = ResolveFunctionName(profile, new ProfileFunctionId(match.ModuleName, match.Name)),
       ModuleName = match.ModuleName ?? "Unknown",
       SelfTime = data.ExclusiveWeight.ToString(),
       TotalTime = data.Weight.ToString(),
@@ -663,7 +664,7 @@ public static class ProfileTools
     if (match == null)
       return Error("GetFunctionCallerCallee", $"Function '{functionName}' not found");
 
-    var data = profile.FunctionProfiles[match];
+    var data = profile.GetFunctionProfile(match);
     var totalWeightMs = ProfileSession.TotalWeight.TotalMilliseconds;
     var functionWeightMs = data.Weight.TotalMilliseconds;
     int callerLimit = maxCallers ?? 10;
@@ -671,7 +672,7 @@ public static class ProfileTools
     int backtraceLimit = maxBacktraces ?? 5;
 
     // Get all call tree instances of this function, sorted by weight
-    var instances = profile.CallTree.GetSortedCallTreeNodes(match);
+    var instances = profile.CallTree.GetSortedCallTreeNodes(match.ToProfileId());
     if (instances == null || instances.Count == 0)
       return Error("GetFunctionCallerCallee", $"Function '{functionName}' has no call tree nodes");
 
@@ -681,10 +682,10 @@ public static class ProfileTools
     {
       foreach (var caller in inst.Callers)
       {
-        if (caller?.Function == null) continue;
-        var key = $"{caller.Function.ModuleName}!{ResolveFunctionName(caller)}";
+        if (caller is not {HasFunction: true}) continue;
+        var key = $"{caller.ModuleName}!{ResolveFunctionName(caller)}";
         if (!callerAgg.TryGetValue(key, out var existing))
-          existing = (TimeSpan.Zero, TimeSpan.Zero, caller.Function.ModuleName ?? "Unknown");
+          existing = (TimeSpan.Zero, TimeSpan.Zero, caller.ModuleName ?? "Unknown");
         callerAgg[key] = (existing.weight + caller.Weight, existing.exclusiveWeight + caller.ExclusiveWeight, existing.module);
       }
     }
@@ -701,17 +702,17 @@ public static class ProfileTools
       }).ToArray();
 
     // Aggregate callees from the combined node's children
-    var combined = profile.CallTree.GetCombinedCallTreeNode(match);
+    var combined = profile.CallTree.GetCombinedCallTreeNode(match.ToProfileId());
     var callees = Array.Empty<object>();
     if (combined != null && combined.HasChildren)
     {
       callees = combined.Children
-        .Where(c => c?.Function != null)
+        .Where(c => c is {HasFunction: true})
         .OrderByDescending(c => c.Weight)
         .Take(calleeLimit)
         .Select(c => new
         {
-          Function = $"{c.Function.ModuleName}!{ResolveFunctionName(c)}",
+          Function = $"{c.ModuleName}!{ResolveFunctionName(c)}",
           InclusiveTimeMs = Math.Round(c.Weight.TotalMilliseconds, 2),
           InclusivePct = totalWeightMs > 0 ? Math.Round(c.Weight.TotalMilliseconds / totalWeightMs * 100, 2) : 0,
           FunctionPct = functionWeightMs > 0 ? Math.Round(c.Weight.TotalMilliseconds / functionWeightMs * 100, 2) : 0,
@@ -731,7 +732,7 @@ public static class ProfileTools
           WeightMs = Math.Round(inst.Weight.TotalMilliseconds, 2),
           WeightPct = totalWeightMs > 0 ? Math.Round(inst.Weight.TotalMilliseconds / totalWeightMs * 100, 2) : 0,
           FunctionPct = functionWeightMs > 0 ? Math.Round(inst.Weight.TotalMilliseconds / functionWeightMs * 100, 2) : 0,
-          Stack = bt.Select(n => $"{n.Function?.ModuleName}!{ResolveFunctionName(n)}").ToArray()
+          Stack = bt.Select(n => $"{n.ModuleName}!{ResolveFunctionName(n)}").ToArray()
         };
       }).ToArray();
 
@@ -739,7 +740,7 @@ public static class ProfileTools
     {
       Action = "GetFunctionCallerCallee",
       Status = "Success",
-      FunctionName = ResolveFunctionName(match),
+      FunctionName = ResolveFunctionName(profile, new ProfileFunctionId(match.ModuleName, match.Name)),
       ModuleName = match.ModuleName ?? "Unknown",
       SelfTime = data.ExclusiveWeight.ToString(),
       TotalTime = data.Weight.ToString(),
@@ -794,11 +795,11 @@ public static class ProfileTools
   /// <summary>
   /// Returns the PDB-resolved name for a function, falling back to IRTextFunction.Name (hex placeholder).
   /// </summary>
-  private static string ResolveFunctionName(IRTextFunction func)
+  private static string ResolveFunctionName(ProfileData profile, ProfileFunctionId func)
   {
-    var data = ProfileSession.LoadedProfile?.FunctionProfiles.GetValueOrDefault(func);
+    var data = profile?.GetFunctionProfile(func);
     var debugName = data?.FunctionDebugInfo?.Name;
-    return !string.IsNullOrEmpty(debugName) ? debugName : func.Name;
+    return !string.IsNullOrEmpty(debugName) ? debugName : func.FunctionName;
   }
 
   /// <summary>
@@ -807,20 +808,27 @@ public static class ProfileTools
   private static string ResolveFunctionName(ProfileCallTreeNode node)
   {
     var debugName = node.FunctionDebugInfo?.Name;
-    return !string.IsNullOrEmpty(debugName) ? debugName : node.Function?.Name ?? "Unknown";
+    return !string.IsNullOrEmpty(debugName) ? debugName : node.FunctionName ?? "Unknown";
   }
 
   private static IRTextFunction? FindFunction(ProfileData profile, string functionName)
   {
-    // Search by resolved PDB name first, then by IRTextFunction.Name (hex placeholder)
-    return profile.FunctionProfiles.Keys
-      .FirstOrDefault(f => ResolveFunctionName(f).Equals(functionName, StringComparison.OrdinalIgnoreCase))
-      ?? profile.FunctionProfiles.Keys
-      .FirstOrDefault(f => f.Name.Equals(functionName, StringComparison.OrdinalIgnoreCase))
-      ?? profile.FunctionProfiles.Keys
-      .FirstOrDefault(f => ResolveFunctionName(f).Contains(functionName, StringComparison.OrdinalIgnoreCase))
-      ?? profile.FunctionProfiles.Keys
-      .FirstOrDefault(f => f.Name.Contains(functionName, StringComparison.OrdinalIgnoreCase));
+    var id = FindFunctionId(profile, functionName);
+    return id.HasValue ? profile.ResolveFunction(id.Value) : null;
+  }
+
+  private static ProfileFunctionId? FindFunctionId(ProfileData profile, string functionName)
+  {
+    // Search by resolved PDB name first, then by neutral function name (hex placeholder).
+    foreach (var f in profile.FunctionProfiles.Keys)
+      if (ResolveFunctionName(profile, f).Equals(functionName, StringComparison.OrdinalIgnoreCase)) return f;
+    foreach (var f in profile.FunctionProfiles.Keys)
+      if (f.FunctionName.Equals(functionName, StringComparison.OrdinalIgnoreCase)) return f;
+    foreach (var f in profile.FunctionProfiles.Keys)
+      if (ResolveFunctionName(profile, f).Contains(functionName, StringComparison.OrdinalIgnoreCase)) return f;
+    foreach (var f in profile.FunctionProfiles.Keys)
+      if (f.FunctionName.Contains(functionName, StringComparison.OrdinalIgnoreCase)) return f;
+    return null;
   }
 
   private static string Error(string action, string message)

@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ProfileExplorer.Profiling.Profiling;
+using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Profiling.Symbols;
 
 namespace ProfileExplorer.Profiling.Tests.Unit;
@@ -34,7 +36,7 @@ public class CounterAggregatorTests {
       new TestCounterEvent { InstructionPointer = 0x1100, CounterId = 1, ProcessId = 1 }
     ]);
 
-    var counters = aggregator.GetCounters("test.dll!HotFunc");
+    var counters = aggregator.GetCounters(new ProfileFunctionId("test.dll", "HotFunc"));
     Assert.IsNotNull(counters);
     Assert.AreEqual(1, counters.Count);
   }
@@ -49,15 +51,15 @@ public class CounterAggregatorTests {
       new TestCounterEvent { InstructionPointer = 0x1110, CounterId = 3 }
     ]);
 
-    var counters = aggregator.GetCounters("test.dll!HotFunc");
+    var counters = aggregator.GetCounters(new ProfileFunctionId("test.dll", "HotFunc"));
     Assert.IsNotNull(counters);
 
     // All three counter types at same instruction offset.
     long offset = 0x110 - 0x100; // 0x10
     Assert.IsTrue(counters.ContainsKey(offset));
-    Assert.AreEqual(1, counters[offset].GetCounterValue(1));
-    Assert.AreEqual(1, counters[offset].GetCounterValue(2));
-    Assert.AreEqual(1, counters[offset].GetCounterValue(3));
+    Assert.AreEqual(1, counters[offset].FindCounterValue(1));
+    Assert.AreEqual(1, counters[offset].FindCounterValue(2));
+    Assert.AreEqual(1, counters[offset].FindCounterValue(3));
   }
 
   [TestMethod]
@@ -78,14 +80,14 @@ public class CounterAggregatorTests {
       new TestCounterEvent { InstructionPointer = 0xDEADBEEF, CounterId = 1 }
     ]);
 
-    var counters = aggregator.GetCounters("anything");
+    var counters = aggregator.GetCounters(new ProfileFunctionId("missing", "missing"));
     Assert.IsNull(counters);
   }
 
   [TestMethod]
   public void NoCountersRegistered_ReturnsNull() {
     var (_, aggregator) = Setup();
-    var counters = aggregator.GetCounters("test.dll!HotFunc");
+    var counters = aggregator.GetCounters(new ProfileFunctionId("test.dll", "HotFunc"));
     Assert.IsNull(counters);
   }
 }

@@ -12,7 +12,7 @@ namespace ProfileExplorer.Profiling.Symbols;
 /// Vendored implementation — replaces TraceEvent's SymbolReader to avoid the large transitive dependency.
 /// Implements the standard symbol server protocol: GET /{name}/{hash}/{name}
 /// </summary>
-public class SymbolServerClient : IDisposable {
+public class SymbolServerClient : IDisposable, ISymbolFileResolver {
   private readonly HttpClient httpClient_;
   private readonly List<SymbolServerInfo> servers_ = [];
   private readonly string? localCachePath_;

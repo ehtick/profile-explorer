@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 
 namespace ProfileExplorer.Profiling.Profiling;
@@ -40,7 +41,9 @@ internal class IpResolver {
       var managed = managedResolver_.FindMethod(ip);
       if (managed != null) {
         long rva = ip - managed.NativeStartAddress;
-        return new ResolvedIp(managed.ModuleName ?? "[managed]", rva, managed.MethodName, ip, rva, managed.NativeSize, true);
+        var managedInfo = new FunctionDebugInfo(managed.MethodName, 0, (uint)managed.NativeSize);
+        return new ResolvedIp(managed.ModuleName ?? "[managed]", rva, managed.MethodName, ip, managedInfo,
+          rva, managed.NativeSize, true);
       }
     }
 
@@ -54,14 +57,14 @@ internal class IpResolver {
     if (sortedFunctionsByModule_.TryGetValue(image.Name, out var functions)) {
       var func = FunctionDebugInfo.BinarySearch(functions, moduleRva);
       if (func != null) {
-        return new ResolvedIp(image.Name, func.RVA, func.Name, ip,
+        return new ResolvedIp(image.Name, func.RVA, func.Name, ip, func,
           moduleRva - func.RVA,
           (int)func.Size);
       }
     }
 
     // Module found but function not resolved.
-    return new ResolvedIp(image.Name, moduleRva, null, ip);
+    return new ResolvedIp(image.Name, moduleRva, null, ip, new FunctionDebugInfo(null, moduleRva, 0));
   }
 
   private ImageInfo? FindImage(long ip) {
@@ -100,6 +103,7 @@ internal record ResolvedIp(
   long Rva,
   string? FunctionName,
   long OriginalIp,
+  FunctionDebugInfo DebugInfo,
   long InstructionOffset = 0,
   int FunctionSize = 0,
   bool IsManaged = false);

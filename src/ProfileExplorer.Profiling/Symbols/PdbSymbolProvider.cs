@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using Dia2Lib;
+using ProfileExplorer.Core.Binary;
 
 namespace ProfileExplorer.Profiling.Symbols;
 
@@ -10,9 +12,15 @@ namespace ProfileExplorer.Profiling.Symbols;
 /// Supports both registered COM and side-loaded DLL (no regsvr32 needed).
 /// Ported from ProfileExplorerCore/Binary/PDBDebugInfoProvider.cs.
 /// </summary>
-internal class PdbSymbolProvider : IDebugInfoProvider {
+public class PdbSymbolProvider : ISymbolDebugInfo {
   private const int MaxDemangledNameLength = 8192;
   private const int FunctionCacheMissThreshold = 100;
+
+  // UnDecorateSymbolName (undname) flags — mirror PE's NativeMethods.UnDecorateFlags subset.
+  private const int UndnameNoAllocationModel = 0x0008;
+  private const int UndnameNoAccessSpecifiers = 0x0080;
+  private const int UndnameNoMemberType = 0x0200;
+  private const int UndnameNameOnly = 0x1000;
 
   private IDiaDataSource? diaSource_;
   private IDiaSession? session_;
@@ -23,6 +31,8 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
   private bool sortedFuncListOverlapping_;
   private volatile int funcCacheMisses_;
   private string? debugFilePath_;
+  private SymbolFileDescriptor? cacheKey_;
+  private string? cacheDirectory_;
 
   private static bool diaRegistrationFailed_;
   private static string? diaRegistrationError_;
@@ -34,9 +44,15 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
   /// <summary>Optional path to msdia140.dll for side-loading.</summary>
   public static string? MsDiaPath { get; set; }
 
-  public bool LoadDebugInfo(string debugFilePath) {
+  /// <summary>Processor architecture is not derived from the PDB; resolved elsewhere.</summary>
+  public Machine? Architecture => null;
+
+  public bool LoadDebugInfo(string debugFilePath, SymbolFileDescriptor? cacheKey = null,
+                            string? cacheDirectory = null, bool enumerateImmediately = true) {
     if (!File.Exists(debugFilePath)) return false;
     debugFilePath_ = debugFilePath;
+    cacheKey_ = cacheKey;
+    cacheDirectory_ = cacheDirectory;
 
     try {
       diaSource_ = CreateDiaSource();
@@ -56,7 +72,13 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
         Marshal.ReleaseComObject(exeEnum);
       }
 
-      LoadFunctionList();
+      // When enumerateImmediately is false, defer reading the function list until the first
+      // GetSortedFunctions/EnumerateFunctions call or the FindFunctionByRVA cache-miss threshold
+      // (mirrors PE's lazy enumeration to avoid eagerly parsing PDBs that get few queries).
+      if (enumerateImmediately) {
+        EnsureFunctionListLoaded();
+      }
+
       return true;
     }
     catch (COMException ex) {
@@ -78,12 +100,23 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
     functionsByName_ = null;
   }
 
-  public IEnumerable<FunctionDebugInfo> EnumerateFunctions() => sortedFuncList_ ?? [];
-  public List<FunctionDebugInfo> GetSortedFunctions() { if (sortedFuncList_ == null) LoadFunctionList(); return sortedFuncList_ ?? []; }
+  public IEnumerable<FunctionDebugInfo> EnumerateFunctions() { EnsureFunctionListLoaded(); return sortedFuncList_ ?? []; }
+  public List<FunctionDebugInfo> GetSortedFunctions() { EnsureFunctionListLoaded(); return sortedFuncList_ ?? []; }
 
   public FunctionDebugInfo? FindFunction(string functionName) {
     if (functionsByName_?.TryGetValue(functionName, out var result) == true) return result;
-    return sortedFuncList_?.FirstOrDefault(f => string.Equals(f.Name, functionName, StringComparison.Ordinal));
+
+    var listMatch = sortedFuncList_?.FirstOrDefault(f => string.Equals(f.Name, functionName, StringComparison.Ordinal));
+    if (listMatch != null) return listMatch;
+
+    // Fall back to a DIA query using the demangled name (mirrors PE's FindFunctionSymbol):
+    // the cached list stores mangled public-symbol names, so a demangled query name
+    // won't match by string — ask DIA directly, preferring the public symbol's mangled name.
+    var sym = FindFunctionSymbolByName(functionName);
+    if (sym == null) return null;
+
+    try { return new FunctionDebugInfo(sym.name ?? "", sym.relativeVirtualAddress, (uint)sym.length); }
+    finally { Marshal.ReleaseComObject(sym); }
   }
 
   public FunctionDebugInfo? FindFunctionByRVA(long rva) {
@@ -93,7 +126,7 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
     }
 
     if (sortedFuncList_ == null && Interlocked.Increment(ref funcCacheMisses_) >= FunctionCacheMissThreshold) {
-      LoadFunctionList();
+      EnsureFunctionListLoaded();
       if (sortedFuncList_ != null) return FunctionDebugInfo.BinarySearch(sortedFuncList_, rva, sortedFuncListOverlapping_);
     }
 
@@ -152,19 +185,98 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
   }
 
   public static string? UndecorateName(string decoratedName) {
+    return DemangleFunctionName(decoratedName);
+  }
+
+  /// <summary>
+  /// Demangle an MSVC C++ symbol name. Mirrors PE's PDBDebugInfoProvider.DemangleFunctionName:
+  /// only names starting with '?' are mangled; others are returned unchanged. Uses the same
+  /// undname flag set and a global lock (UnDecorateSymbolName is not thread-safe).
+  /// </summary>
+  public static string DemangleFunctionName(string name, bool onlyName = false) {
+    // Mangled MSVC C++ names always start with a '?' char.
+    if (string.IsNullOrEmpty(name) || !name.StartsWith('?')) {
+      return name;
+    }
+
+    int flags = UndnameNoAccessSpecifiers | UndnameNoAllocationModel | UndnameNoMemberType;
+    if (onlyName) flags |= UndnameNameOnly;
+
+    // DbgHelp UnDecorateSymbolName is not thread safe and can return bogus
+    // function names if not called under a global lock.
     lock (undecorateLock_) {
       try {
         var buffer = new char[MaxDemangledNameLength];
-        int result = NativeMethods.UnDecorateSymbolName(decoratedName, buffer, MaxDemangledNameLength, 0);
-        return result > 0 ? new string(buffer, 0, result) : decoratedName;
+        int result = NativeMethods.UnDecorateSymbolName(name, buffer, MaxDemangledNameLength, flags);
+        return result > 0 ? new string(buffer, 0, result) : name;
       }
-      catch { return decoratedName; }
+      catch { return name; }
     }
   }
 
   public void Dispose() => Unload();
 
   // ── Private ──────────────────────────────────────────
+
+  /// <summary>
+  /// Load the function list on demand (from cache when available, else enumerate the PDB and
+  /// persist the cache). Idempotent — a no-op once the list is populated.
+  /// </summary>
+  private void EnsureFunctionListLoaded() {
+    if (sortedFuncList_ != null) return;
+    if (!TryLoadFunctionListFromCache(cacheKey_, cacheDirectory_)) {
+      LoadFunctionList();
+      TrySaveFunctionListToCache(cacheKey_, cacheDirectory_);
+    }
+  }
+
+  private bool TryLoadFunctionListFromCache(SymbolFileDescriptor? cacheKey, string? cacheDirectory) {
+    if (cacheKey == null || string.IsNullOrEmpty(cacheDirectory)) return false;
+
+    try {
+      var cached = SymbolFileCache.DeserializeAsync(cacheKey, cacheDirectory).GetAwaiter().GetResult();
+
+      if (cached?.FunctionList is { Count: > 0 }) {
+        InitializeFunctionList(cached.FunctionList);
+        return true;
+      }
+    }
+    catch {
+      // Cache miss/corruption — fall back to DIA enumeration.
+    }
+
+    return false;
+  }
+
+  private void TrySaveFunctionListToCache(SymbolFileDescriptor? cacheKey, string? cacheDirectory) {
+    if (cacheKey == null || string.IsNullOrEmpty(cacheDirectory) || sortedFuncList_ is not { Count: > 0 }) {
+      return;
+    }
+
+    try {
+      var cache = new SymbolFileCache { SymbolFile = cacheKey, FunctionList = sortedFuncList_ };
+      SymbolFileCache.SerializeAsync(cache, cacheDirectory).GetAwaiter().GetResult();
+    }
+    catch {
+      // Best-effort cache write.
+    }
+  }
+
+  private void InitializeFunctionList(List<FunctionDebugInfo> symbolList) {
+    symbolList.Sort();
+    sortedFuncListOverlapping_ = false;
+
+    for (int i = 0; i < symbolList.Count - 1; i++) {
+      if (symbolList[i].EndRVA >= symbolList[i + 1].StartRVA) {
+        sortedFuncListOverlapping_ = true;
+        break;
+      }
+    }
+
+    sortedFuncList_ = symbolList;
+    functionsByName_ = new Dictionary<string, FunctionDebugInfo>(symbolList.Count, StringComparer.Ordinal);
+    foreach (var func in symbolList) functionsByName_.TryAdd(func.Name, func);
+  }
 
   private void LoadFunctionList() {
     if (globalSymbol_ == null) return;
@@ -184,11 +296,10 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
               long rva = sym.relativeVirtualAddress;
               uint size = (uint)sym.length;
               if (tag == SymTagEnum.SymTagPublicSymbol && symbolMap.TryGetValue(rva, out var existing) && existing.Size == size) {
-                // Don't overwrite unmangled SymTagFunction names with mangled SymTagPublicSymbol names.
-                // Only use the public symbol name if the function name is missing.
-                if (string.IsNullOrEmpty(existing.Name)) {
-                  existing.Name = name;
-                }
+                // Public symbols are preferred over function symbols when they share the same
+                // RVA and size: this saves the mangled name (only public symbols carry it),
+                // mirroring PE's CollectFunctionDebugInfo / FindFunctionSymbolByRVA behavior.
+                existing.Name = name;
               }
               else if (!symbolMap.ContainsKey(rva)) {
                 var info = new FunctionDebugInfo(name, rva, size);
@@ -204,17 +315,63 @@ internal class PdbSymbolProvider : IDebugInfoProvider {
 
       Collect(SymTagEnum.SymTagFunction);
       Collect(SymTagEnum.SymTagPublicSymbol);
-      symbolList.Sort();
-
-      for (int i = 0; i < symbolList.Count - 1; i++) {
-        if (symbolList[i].EndRVA >= symbolList[i + 1].StartRVA) { sortedFuncListOverlapping_ = true; break; }
-      }
-
-      sortedFuncList_ = symbolList;
-      functionsByName_ = new Dictionary<string, FunctionDebugInfo>(symbolList.Count, StringComparer.Ordinal);
-      foreach (var func in symbolList) functionsByName_.TryAdd(func.Name, func);
+      InitializeFunctionList(symbolList);
     }
     catch { /* Function enumeration failed. */ }
+  }
+
+  /// <summary>
+  /// Locate a function/public symbol by name via DIA, demangling the query name the way PE does
+  /// (mirrors FindFunctionSymbol/FindFunctionSymbolImpl). Tries SymTagFunction first, then
+  /// SymTagPublicSymbol; among class::method matches, prefers the one whose full undecorated
+  /// name matches, else returns the first candidate.
+  /// </summary>
+  private IDiaSymbol? FindFunctionSymbolByName(string functionName) {
+    if (globalSymbol_ == null) return null;
+
+    string demangledName = DemangleFunctionName(functionName);
+    string queryDemangledName = DemangleFunctionName(functionName, onlyName: true);
+
+    return FindFunctionSymbolByNameImpl(SymTagEnum.SymTagFunction, demangledName, queryDemangledName)
+           ?? FindFunctionSymbolByNameImpl(SymTagEnum.SymTagPublicSymbol, demangledName, queryDemangledName);
+  }
+
+  private IDiaSymbol? FindFunctionSymbolByNameImpl(SymTagEnum symbolType, string demangledName,
+                                                   string queryDemangledName) {
+    IDiaEnumSymbols? symbolEnum = null;
+    try {
+      globalSymbol_.findChildren(symbolType, queryDemangledName, 0, out symbolEnum);
+      if (symbolEnum == null) return null;
+
+      IDiaSymbol? candidateSymbol = null;
+      while (true) {
+        symbolEnum.Next(1, out var symbol, out uint retrieved);
+        if (retrieved == 0) break;
+
+        // Class::function matches; check the full unmangled name to pick the right overload.
+        candidateSymbol ??= symbol;
+        try {
+          symbol.get_undecoratedNameEx(UndnameNoAccessSpecifiers, out string symbolDemangledName);
+          if (symbolDemangledName == demangledName) {
+            if (!ReferenceEquals(symbol, candidateSymbol)) {
+              // keep candidate alive until we return; nothing to release here.
+            }
+            return symbol;
+          }
+        }
+        catch { /* ignore and keep first candidate */ }
+
+        if (!ReferenceEquals(symbol, candidateSymbol)) {
+          Marshal.ReleaseComObject(symbol);
+        }
+      }
+
+      return candidateSymbol; // First match (PE returns first match).
+    }
+    catch { return null; }
+    finally {
+      if (symbolEnum != null) Marshal.ReleaseComObject(symbolEnum);
+    }
   }
 
   private FunctionDebugInfo? FindFunctionByRVADirect(long rva) {

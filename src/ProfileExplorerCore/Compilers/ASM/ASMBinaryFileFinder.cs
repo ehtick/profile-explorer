@@ -15,6 +15,6 @@ public class ASMBinaryFileFinder : IBinaryFileFinder {
       settings = CoreSettingsProvider.SymbolSettings.Clone();
     }
 
-    return await PEBinaryInfoProvider.LocateBinaryFileAsync(binaryFile, settings).ConfigureAwait(false);
+    return await BinaryFileLocator.LocateBinaryFileAsync(binaryFile, settings).ConfigureAwait(false);
   }
 }

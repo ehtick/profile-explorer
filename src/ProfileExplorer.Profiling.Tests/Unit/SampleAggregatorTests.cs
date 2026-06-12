@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ProfileExplorer.Profiling.Profiling;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 using ProfileExplorer.Profiling.Tests.Helpers;
 
@@ -31,8 +32,9 @@ public class SampleAggregatorTests {
     var profiles = aggregator.Build();
 
     Assert.AreEqual(1, profiles.Count);
-    Assert.AreEqual("Foo", profiles[0].FunctionName);
-    Assert.AreEqual(1.0, profiles[0].ExclusiveWeight.TotalMilliseconds, 0.01);
+    var foo = profiles.First();
+    Assert.AreEqual("Foo", foo.Key.FunctionName);
+    Assert.AreEqual(1.0, foo.Value.ExclusiveWeight.TotalMilliseconds, 0.01);
   }
 
   [TestMethod]
@@ -45,7 +47,7 @@ public class SampleAggregatorTests {
     var profiles = aggregator.Build();
 
     Assert.AreEqual(1, profiles.Count);
-    Assert.AreEqual(100.0, profiles[0].ExclusiveWeight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(100.0, profiles.First().Value.ExclusiveWeight.TotalMilliseconds, 0.01);
   }
 
   [TestMethod]
@@ -88,8 +90,8 @@ public class SampleAggregatorTests {
     var profiles = aggregator.Build();
 
     Assert.AreEqual(1, profiles.Count);
-    Assert.AreEqual(5, profiles[0].InstructionWeights.Count);
-    Assert.AreEqual(50.0, profiles[0].ExclusiveWeight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(5, profiles.First().Value.InstructionWeight.Count);
+    Assert.AreEqual(50.0, profiles.First().Value.ExclusiveWeight.TotalMilliseconds, 0.01);
   }
 
   [TestMethod]
@@ -138,11 +140,12 @@ public class SampleAggregatorTests {
 
     aggregator.AddSamples(samples);
     var profiles = aggregator.Build();
+    double total = aggregator.TotalWeight.TotalMilliseconds;
 
-    var foo = profiles.First(p => p.FunctionName == "Foo");
-    var bar = profiles.First(p => p.FunctionName == "Bar");
+    var foo = profiles.First(p => p.Key.FunctionName == "Foo");
+    var bar = profiles.First(p => p.Key.FunctionName == "Bar");
 
-    Assert.AreEqual(75.0, foo.ExclusivePercent, 0.1);
-    Assert.AreEqual(25.0, bar.ExclusivePercent, 0.1);
+    Assert.AreEqual(75.0, foo.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
+    Assert.AreEqual(25.0, bar.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
   }
 }

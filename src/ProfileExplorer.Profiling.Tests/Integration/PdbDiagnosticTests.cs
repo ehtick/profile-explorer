@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 
 namespace ProfileExplorer.Profiling.Tests.Integration;

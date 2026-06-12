@@ -81,6 +81,16 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
     public ILoadedDocument Document => document_;
 
     /// <summary>
+    /// Registers all synthetic per-thread functions into the profile's neutral-identity resolver,
+    /// so call-tree nodes for unmapped/JIT frames can resolve back to their IRTextFunction.
+    /// </summary>
+    public void RegisterFunctionsInto(ProfileData profileData) {
+      foreach (var pair in threadFunctions_.Values) {
+        profileData.RegisterFunction(pair.Function);
+      }
+    }
+
+    /// <summary>
     /// Gets or creates a synthetic function for samples with unmapped IPs
     /// on a specific thread.
     /// </summary>
@@ -888,6 +898,9 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
     otherDocuments = new List<ILoadedDocument>();
 
     foreach (ProfileModuleBuilder module in imageModuleMap_.Values) {
+      // Register all created functions for neutral-identity -> IRTextFunction resolution (navigation).
+      module.RegisterFunctionsInto(profileData_);
+
       var moduleDoc = module.ModuleDocument;
 
       if (moduleDoc == null) {
@@ -917,6 +930,7 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
     // Include synthetic [Unknown Module] documents so the UI can
     // navigate to JIT functions via FindLoadedDocument.
     foreach (var state in unknownModules_.Values) {
+      state.RegisterFunctionsInto(profileData_);
       otherDocuments.Add(state.Document);
     }
 

@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ProfileExplorer.Profiling.Profiling;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 using ProfileExplorer.Profiling.Tests.Helpers;
 
@@ -38,14 +39,14 @@ public class CallTreeBuilderTests {
       [0x1300, 0x1200, 0x1100]);
     builder.AddSamples([sample]);
 
-    var root = builder.Build();
+    var roots = builder.Build().RootNodes;
 
-    Assert.AreEqual(1, root.Children.Count); // One root function.
-    Assert.AreEqual("Root", root.Children[0].FunctionName);
-    Assert.AreEqual(1, root.Children[0].Children.Count);
-    Assert.AreEqual("Mid", root.Children[0].Children[0].FunctionName);
-    Assert.AreEqual(1, root.Children[0].Children[0].Children.Count);
-    Assert.AreEqual("Leaf", root.Children[0].Children[0].Children[0].FunctionName);
+    Assert.AreEqual(1, roots.Count); // One root function.
+    Assert.AreEqual("Root", roots[0].FunctionName);
+    Assert.AreEqual(1, roots[0].Children.Count);
+    Assert.AreEqual("Mid", roots[0].Children[0].FunctionName);
+    Assert.AreEqual(1, roots[0].Children[0].Children.Count);
+    Assert.AreEqual("Leaf", roots[0].Children[0].Children[0].FunctionName);
   }
 
   [TestMethod]
@@ -60,11 +61,11 @@ public class CallTreeBuilderTests {
       new SyntheticSample(0x1300, TimeSpan.FromMilliseconds(1), 1, 1, "test.dll", 0x1000, [0x1300, 0x1100])
     ]);
 
-    var root = builder.Build();
+    var roots = builder.Build().RootNodes;
 
-    Assert.AreEqual(1, root.Children.Count); // Single root.
-    Assert.AreEqual("Root", root.Children[0].FunctionName);
-    Assert.AreEqual(2, root.Children[0].Children.Count); // Two children.
+    Assert.AreEqual(1, roots.Count); // Single root.
+    Assert.AreEqual("Root", roots[0].FunctionName);
+    Assert.AreEqual(2, roots[0].Children.Count); // Two children.
   }
 
   [TestMethod]
@@ -77,10 +78,9 @@ public class CallTreeBuilderTests {
       new SyntheticSample(0x1200, TimeSpan.FromMilliseconds(3), 1, 1, "test.dll", 0x1000, [0x1200, 0x1100])
     ]);
 
-    var root = builder.Build();
-    var rootFunc = root.Children[0];
+    var rootFunc = builder.Build().RootNodes[0];
 
-    Assert.AreEqual(3.0, rootFunc.InclusiveWeight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(3.0, rootFunc.Weight.TotalMilliseconds, 0.01);
   }
 
   [TestMethod]
@@ -93,8 +93,7 @@ public class CallTreeBuilderTests {
       new SyntheticSample(0x1200, TimeSpan.FromMilliseconds(5), 1, 1, "test.dll", 0x1000, [0x1200, 0x1100])
     ]);
 
-    var root = builder.Build();
-    var rootFunc = root.Children[0];
+    var rootFunc = builder.Build().RootNodes[0];
     var leafFunc = rootFunc.Children[0];
 
     Assert.AreEqual(0.0, rootFunc.ExclusiveWeight.TotalMilliseconds, 0.01);
@@ -111,12 +110,11 @@ public class CallTreeBuilderTests {
       new SyntheticSample(0x1100, TimeSpan.FromMilliseconds(7), 1, 20, "test.dll", 0x1000, [0x1100])
     ]);
 
-    var root = builder.Build();
-    var func = root.Children[0];
+    var func = builder.Build().RootNodes[0];
 
     Assert.AreEqual(2, func.ThreadWeights.Count);
-    Assert.AreEqual(3.0, func.ThreadWeights[10].Inclusive.TotalMilliseconds, 0.01);
-    Assert.AreEqual(7.0, func.ThreadWeights[20].Inclusive.TotalMilliseconds, 0.01);
+    Assert.AreEqual(3.0, func.ThreadWeights[10].Weight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(7.0, func.ThreadWeights[20].Weight.TotalMilliseconds, 0.01);
   }
 
   [TestMethod]
@@ -129,8 +127,7 @@ public class CallTreeBuilderTests {
       new SyntheticSample(0x1100, TimeSpan.FromMilliseconds(1), 1, 1, "test.dll", 0x1000)
     ]);
 
-    var root = builder.Build();
-    Assert.AreEqual(0, root.Children.Count);
+    Assert.AreEqual(0, builder.Build().RootNodes.Count);
   }
 
   [TestMethod]
@@ -143,9 +140,9 @@ public class CallTreeBuilderTests {
     ).ToList();
 
     builder.AddSamples(samples);
-    var root = builder.Build();
+    var roots = builder.Build().RootNodes;
 
-    Assert.AreEqual(10.0, root.Children[0].InclusiveWeight.TotalMilliseconds, 0.01);
-    Assert.AreEqual(10.0, root.Children[0].ExclusiveWeight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(10.0, roots[0].Weight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(10.0, roots[0].ExclusiveWeight.TotalMilliseconds, 0.01);
   }
 }

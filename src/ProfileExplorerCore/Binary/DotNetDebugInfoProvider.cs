@@ -14,33 +14,26 @@ using ProfileExplorer.Core.Utilities;
 
 namespace ProfileExplorer.Core.Binary;
 
-//? Provider ASM should return instance instead of JSONDebug
-public class DotNetDebugInfoProvider : IDebugInfoProvider {
-  private Dictionary<string, FunctionDebugInfo> functionMap_;
-  private List<FunctionDebugInfo> functions_;
-  private Machine architecture_;
-  private Dictionary<FunctionDebugInfo, List<(int ILOffset, int NativeOffset)>> methodILNativeMap_;
-  private Dictionary<long, MethodCode> methodCodeMap_;
+/// <summary>
+/// Profile Explorer's managed (.NET) debug-info provider. Extends the TraceEvent-free
+/// <see cref="ManagedDebugInfoProvider"/> reading core (in ProfileExplorer.Profiling) with IR
+/// source-location annotation and TraceEvent-based managed (portable) PDB source-line loading.
+/// </summary>
+public class DotNetDebugInfoProvider : ManagedDebugInfoProvider, IDebugInfoProvider {
   private bool hasManagedSymbolFileFailure_;
 
-  public DotNetDebugInfoProvider(Machine architecture) {
-    architecture_ = architecture;
-    functionMap_ = new Dictionary<string, FunctionDebugInfo>();
-    functions_ = new List<FunctionDebugInfo>();
-    methodILNativeMap_ = new Dictionary<FunctionDebugInfo, List<(int ILOffset, int NativeOffset)>>();
+  public DotNetDebugInfoProvider(Machine architecture) : base(architecture) {
   }
 
   public SymbolFileDescriptor ManagedSymbolFile { get; set; }
   public string ManagedAsmFilePath { get; set; }
-  public Machine? Architecture => architecture_;
   public SymbolFileSourceSettings SymbolSettings { get; set; }
 
   public bool AnnotateSourceLocations(FunctionIR function, IRTextFunction textFunc) {
     return AnnotateSourceLocations(function, textFunc.Name);
   }
 
-  public bool AnnotateSourceLocations(FunctionIR function,
-                                      FunctionDebugInfo funcInfo) {
+  public bool AnnotateSourceLocations(FunctionIR function, FunctionDebugInfo funcInfo) {
     var metadataTag = function.GetTag<AssemblyMetadataTag>();
 
     if (metadataTag == null) {
@@ -65,98 +58,6 @@ public class DotNetDebugInfoProvider : IDebugInfoProvider {
     return true;
   }
 
-  public FunctionDebugInfo FindFunction(string functionName) {
-    return functionMap_.GetValueOr(functionName, FunctionDebugInfo.Unknown);
-  }
-
-  public IEnumerable<FunctionDebugInfo> EnumerateFunctions() {
-    return functions_;
-  }
-
-  public List<FunctionDebugInfo> GetSortedFunctions() {
-    return functions_;
-  }
-
-  public FunctionDebugInfo FindFunctionByRVA(long rva) {
-    return FunctionDebugInfo.BinarySearch(functions_, rva);
-  }
-
-  public SourceFileDebugInfo FindFunctionSourceFilePath(IRTextFunction textFunc) {
-    return FindFunctionSourceFilePath(textFunc.Name);
-  }
-
-  public SourceFileDebugInfo FindFunctionSourceFilePath(string functionName) {
-    if (functionMap_.TryGetValue(functionName, out var funcInfo)) {
-      return GetSourceFileInfo(funcInfo);
-    }
-
-    return SourceFileDebugInfo.Unknown;
-  }
-
-  public SourceFileDebugInfo FindSourceFilePathByRVA(long rva) {
-    var funcInfo = FindFunctionByRVA(rva);
-
-    if (EnsureHasSourceLines(funcInfo)) {
-      return GetSourceFileInfo(funcInfo);
-    }
-
-    return SourceFileDebugInfo.Unknown;
-  }
-
-  public SourceLineDebugInfo FindSourceLineByRVA(long rva, bool includeInlinees) {
-    var funcInfo = FindFunctionByRVA(rva);
-
-    if (EnsureHasSourceLines(funcInfo)) {
-      long offset = rva - funcInfo.StartRVA;
-      return funcInfo.FindNearestLine(offset);
-    }
-
-    return SourceLineDebugInfo.Unknown;
-  }
-
-  public void Unload() {
-  }
-
-  public bool LoadDebugInfo(DebugFileSearchResult debugFile, IDebugInfoProvider other = null) {
-    return true;
-  }
-
-  public void Dispose() {
-  }
-
-  public bool PopulateSourceLines(FunctionDebugInfo funcInfo) {
-    return true;
-  }
-
-  public void UpdateArchitecture(Machine architecture) {
-    if (architecture_ == Machine.Unknown) {
-      architecture_ = architecture;
-    }
-  }
-
-  public MethodCode FindMethodCode(FunctionDebugInfo funcInfo) {
-    return methodCodeMap_?.GetValueOrNull(funcInfo.RVA);
-  }
-
-  public void AddFunctionInfo(FunctionDebugInfo funcInfo) {
-    functions_.Add(funcInfo);
-    functionMap_[funcInfo.Name] = funcInfo;
-  }
-
-  public void AddMethodILToNativeMap(FunctionDebugInfo functionDebugInfo,
-                                     List<(int ILOffset, int NativeOffset)> ilOffsets) {
-    methodILNativeMap_[functionDebugInfo] = ilOffsets;
-  }
-
-  public void LoadingCompleted() {
-    functions_.Sort();
-  }
-
-  public void AddMethodCode(long codeAddress, MethodCode code) {
-    methodCodeMap_ ??= new Dictionary<long, MethodCode>();
-    methodCodeMap_[codeAddress] = code;
-  }
-
   public bool AnnotateSourceLocations(FunctionIR function, string functionName) {
     var funcInfo = FindFunction(functionName);
 
@@ -167,11 +68,19 @@ public class DotNetDebugInfoProvider : IDebugInfoProvider {
     return AnnotateSourceLocations(function, funcInfo);
   }
 
+  public SourceFileDebugInfo FindFunctionSourceFilePath(IRTextFunction textFunc) {
+    return FindFunctionSourceFilePath(textFunc.Name);
+  }
+
+  public bool LoadDebugInfo(DebugFileSearchResult debugFile, IDebugInfoProvider other = null) {
+    return true;
+  }
+
   public bool LoadDebugInfo(string debugFilePath, IDebugInfoProvider other = null) {
     return true;
   }
 
-  private bool EnsureHasSourceLines(FunctionDebugInfo functionDebugInfo) {
+  protected override bool EnsureHasSourceLines(FunctionDebugInfo functionDebugInfo) {
     if (functionDebugInfo == null || functionDebugInfo.IsUnknown) {
       return false;
     }
@@ -247,48 +156,6 @@ public class DotNetDebugInfoProvider : IDebugInfoProvider {
       }
 
       return functionDebugInfo.HasSourceLines;
-    }
-  }
-
-  private SourceFileDebugInfo GetSourceFileInfo(FunctionDebugInfo info) {
-    return new SourceFileDebugInfo(info.SourceFileName,
-                                   info.OriginalSourceFileName,
-                                   info.FirstSourceLine.Line);
-  }
-
-  public struct AddressNamePair {
-    public long Address { get; set; }
-    public string Name { get; set; }
-
-    public AddressNamePair(long address, string name) {
-      Address = address;
-      Name = name;
-    }
-  }
-
-  public class MethodCode {
-    public MethodCode(long address, int size, byte[] code) {
-      Address = address;
-      Size = size;
-      Code = code;
-      CallTargets = new List<AddressNamePair>();
-    }
-
-    public long Address { get; set; }
-    public int Size { get; set; }
-    public byte[] Code { get; set; }
-    public List<AddressNamePair> CallTargets { get; set; }
-
-    public string FindCallTarget(long address) {
-      //? TODO: Map
-
-      int index = CallTargets.FindIndex(item => item.Address == address);
-
-      if (index != -1) {
-        return CallTargets[index].Name;
-      }
-
-      return null;
     }
   }
 

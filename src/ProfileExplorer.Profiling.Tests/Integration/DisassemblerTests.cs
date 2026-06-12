@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-using System.Reflection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using ProfileExplorer.Profiling.Disassembly;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 using ProfileExplorer.Profiling.Tests.Helpers;
 
@@ -16,8 +15,7 @@ public class DisassemblerTests {
 
   private static bool CanRun() {
     return TestDataHelper.HasTestData(TestDataHelper.MsoTrace) &&
-           File.Exists(DllPath) &&
-           Disassembler.CapstoneAvailable;
+           File.Exists(DllPath);
   }
 
   private static (FunctionDebugInfo? func, PdbSymbolProvider? provider) FindTestFunction() {
@@ -45,10 +43,9 @@ public class DisassemblerTests {
     if (func == null) { Assert.Inconclusive("No suitable function found."); provider?.Dispose(); return; }
 
     using (provider) {
-      using var disassembler = new Disassembler();
-      var instructions = disassembler.DisassembleFunction(
-        DllPath, func.RVA, (int)func.Size, 0x180000000, // Typical ASLR base
-        ProcessorArchitecture.Amd64, provider);
+      using var disassembler = Disassembler.CreateForBinary(DllPath, provider, null);
+      Assert.IsNotNull(disassembler, "Should create a disassembler for a valid binary.");
+      var instructions = disassembler.DisassembleToList(func.RVA, (int)func.Size);
 
       Assert.IsTrue(instructions.Count > 0,
         $"Should produce instructions for {func.Name} (RVA={func.RVA:X}, Size={func.Size})");
@@ -67,16 +64,15 @@ public class DisassemblerTests {
     if (func == null) { Assert.Inconclusive("No suitable function found."); provider?.Dispose(); return; }
 
     using (provider) {
-      using var disassembler = new Disassembler();
+      using var disassembler = Disassembler.CreateForBinary(DllPath, provider, null);
+      Assert.IsNotNull(disassembler);
 
       // Use a larger function to increase chance of call instructions.
       var functions = provider!.GetSortedFunctions();
       var bigFunc = functions.Where(f => f.Size > 200).OrderByDescending(f => f.Size).FirstOrDefault();
       if (bigFunc == null) { Assert.Inconclusive("No large function found."); return; }
 
-      var instructions = disassembler.DisassembleFunction(
-        DllPath, bigFunc.RVA, (int)bigFunc.Size, 0x180000000,
-        ProcessorArchitecture.Amd64, provider);
+      var instructions = disassembler.DisassembleToList(bigFunc.RVA, (int)bigFunc.Size);
 
       // Check that at least some call instructions have resolved names.
       var callInstructions = instructions.Where(i => i.Text.StartsWith("call")).ToList();
@@ -97,11 +93,9 @@ public class DisassemblerTests {
     if (func == null) { Assert.Inconclusive("No suitable function found."); provider?.Dispose(); return; }
 
     using (provider) {
-      long imageBase = 0x180000000;
-      using var disassembler = new Disassembler();
-      var instructions = disassembler.DisassembleFunction(
-        DllPath, func.RVA, (int)func.Size, imageBase,
-        ProcessorArchitecture.Amd64, provider);
+      using var disassembler = Disassembler.CreateForBinary(DllPath, provider, null);
+      Assert.IsNotNull(disassembler);
+      var instructions = disassembler.DisassembleToList(func.RVA, (int)func.Size);
 
       if (instructions.Count == 0) { Assert.Inconclusive("No instructions produced."); return; }
 
@@ -130,10 +124,9 @@ public class DisassemblerTests {
 
       if (shortFunc == null) { Assert.Inconclusive("No short function found."); return; }
 
-      using var disassembler = new Disassembler();
-      var instructions = disassembler.DisassembleFunction(
-        DllPath, shortFunc.RVA, (int)shortFunc.Size, 0x180000000,
-        ProcessorArchitecture.Amd64, provider);
+      using var disassembler = Disassembler.CreateForBinary(DllPath, provider, null);
+      Assert.IsNotNull(disassembler);
+      var instructions = disassembler.DisassembleToList(shortFunc.RVA, (int)shortFunc.Size);
 
       // Short functions should produce at least 1 instruction.
       Assert.IsTrue(instructions.Count > 0,
@@ -143,11 +136,8 @@ public class DisassemblerTests {
 
   [TestMethod]
   public void Disassemble_InvalidBinary_ReturnsEmpty() {
-    using var disassembler = new Disassembler();
-    var instructions = disassembler.DisassembleFunction(
-      @"C:\nonexistent\fake.dll", 0x1000, 100, 0x180000000,
-      ProcessorArchitecture.Amd64);
-
-    Assert.AreEqual(0, instructions.Count);
+    // CreateForBinary returns null when the PE binary can't be opened.
+    using var disassembler = Disassembler.CreateForBinary(@"C:\nonexistent\fake.dll", null, null);
+    Assert.IsNull(disassembler);
   }
 }

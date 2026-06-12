@@ -527,12 +527,12 @@ public class EndToEndWorkflowTests {
     
     // Group by function to avoid duplicates and combine weights
     var functionGroups = allFunctionNodes
-      .GroupBy(node => node.Function)
+      .GroupBy(node => node.FunctionId)
       .ToList();
     
     foreach (var group in functionGroups) {
-      var function = group.Key;
-      if (function == null) continue;
+      var functionId = group.Key;
+      if (functionId.IsUnknown) continue;
 
       // Sum up weights from all instances of this function
       var totalWeight = TimeSpan.Zero;
@@ -554,9 +554,9 @@ public class EndToEndWorkflowTests {
       double totalTimePercentage = profileData.ScaleFunctionWeight(totalWeight) * 100;
       
       var functionEntry = new FunctionBaselineEntry {
-        Name = function.Name ?? "Unknown",
+        Name = functionId.FunctionName,
         Address = firstNode.FunctionDebugInfo?.RVA.ToString("X") ?? "Unknown",
-        Module = function.ModuleName ?? "Unknown",
+        Module = functionId.ModuleName,
         SelfTimePercentage = selfTimePercentage,
         SelfTimeMs = totalExclusiveWeight.TotalMilliseconds,
         TotalTimePercentage = totalTimePercentage,

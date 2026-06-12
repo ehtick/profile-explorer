@@ -6,14 +6,20 @@ using System.Runtime.InteropServices;
 using System.Text;
 using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Core.Collections;
-using ProfileExplorer.Core.Utilities;
 
 namespace ProfileExplorer.Core.Profile.CallTree;
+
+public enum ProfileCallTreeNodeKind {
+  Unset = 0,
+  NativeUser = 1,
+  NativeKernel = 2,
+  Managed = 3
+}
 
 public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   private static readonly object MergedNodeTag = new();
   public int Id { get; set; }
-  public IRTextFunction Function { get; set; }
+  public ProfileFunctionId FunctionId { get; set; } // Neutral (module, name) identity; decoupled from IRTextFunction.
   public ProfileCallTreeNodeKind Kind { get; set; }
   private TinyList<ProfileCallTreeNode> children_;
   private ProfileCallTreeNode caller_; // Can't be serialized, reconstructed.
@@ -41,9 +47,9 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   public virtual bool HasCallers => caller_ != null;
   public bool HasCallSites => CallSites != null && CallSites.Count > 0;
   public bool HasThreadWeights => ThreadWeights != null && ThreadWeights.Count > 0;
-  public bool HasFunction => Function != null;
-  public string FunctionName => Function.Name;
-  public string ModuleName => Function.ModuleName;
+  public bool HasFunction => !FunctionId.IsUnknown;
+  public string FunctionName => FunctionId.FunctionName;
+  public string ModuleName => FunctionId.ModuleName;
 
   public double ScaleWeight(TimeSpan relativeWeigth) {
     return relativeWeigth.Ticks / (double)Weight.Ticks;
@@ -69,13 +75,13 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
 
   protected ProfileCallTreeNode() { }
 
-  public ProfileCallTreeNode(FunctionDebugInfo funcInfo, IRTextFunction function,
+  public ProfileCallTreeNode(FunctionDebugInfo funcInfo, ProfileFunctionId functionId,
                              List<ProfileCallTreeNode> children = null,
                              ProfileCallTreeNode caller = null,
                              Dictionary<long, ProfileCallSite> callSites = null,
                              Dictionary<int, (TimeSpan, TimeSpan)> threadWeights = null) {
     FunctionDebugInfo = funcInfo;
-    Function = function;
+    FunctionId = functionId;
     ThreadWeights = threadWeights ?? new Dictionary<int, (TimeSpan, TimeSpan)>();
     children_ = new TinyList<ProfileCallTreeNode>(children);
     caller_ = caller;
@@ -87,14 +93,24 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   }
 
   public void AccumulateWeight(TimeSpan weight, TimeSpan exclusiveWeight, int threadId) {
-    ThreadWeights.AccumulateValue(threadId, weight, exclusiveWeight);
+    ref var currentValue = ref CollectionsMarshal.GetValueRefOrAddDefault(ThreadWeights, threadId, out bool exists);
+
+    // The TimeSpan + operator does an overflow check that is not relevant
+    // (and an exception undesirable), avoid it for some speedup.
+    currentValue.Weight = TimeSpan.FromTicks(currentValue.Weight.Ticks + weight.Ticks);
+    currentValue.ExclusiveWeight = TimeSpan.FromTicks(currentValue.ExclusiveWeight.Ticks + exclusiveWeight.Ticks);
   }
 
   public List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>
     SortedByWeightPerThreadWeights {
     get {
-      var list = ThreadWeights.ToList();
-      list.Sort((a, b) => b.Item2.Weight.CompareTo(a.Item2.Weight));
+      var list = new List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>(ThreadWeights.Count);
+
+      foreach (var pair in ThreadWeights) {
+        list.Add((pair.Key, pair.Value));
+      }
+
+      list.Sort((a, b) => b.Values.Weight.CompareTo(a.Values.Weight));
       return list;
     }
   }
@@ -102,8 +118,13 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   public List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>
     SortedByIdPerThreadWeights {
     get {
-      var list = ThreadWeights.ToList();
-      list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+      var list = new List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>(ThreadWeights.Count);
+
+      foreach (var pair in ThreadWeights) {
+        list.Add((pair.Key, pair.Value));
+      }
+
+      list.Sort((a, b) => a.ThreadId.CompareTo(b.ThreadId));
       return list;
     }
   }
@@ -112,16 +133,16 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
     ExclusiveWeight += weight;
   }
 
-  public (ProfileCallTreeNode, bool) AddChild(FunctionDebugInfo functionDebugInfo, IRTextFunction function) {
-    return GetOrCreateChildNode(functionDebugInfo, function);
+  public (ProfileCallTreeNode, bool) AddChild(FunctionDebugInfo functionDebugInfo, ProfileFunctionId functionId) {
+    return GetOrCreateChildNode(functionDebugInfo, functionId);
   }
 
   public bool HasChild(ProfileCallTreeNode node) {
     return children_.Contains(node);
   }
 
-  public ProfileCallTreeNode FindChildNode(IRTextFunction function) {
-    return children_.Find(node => node.Function == function);
+  public ProfileCallTreeNode FindChildNode(ProfileFunctionId functionId) {
+    return children_.Find(node => node.FunctionId == functionId);
   }
 
   internal void SetChildrenNoLock(List<ProfileCallTreeNode> children) {
@@ -139,14 +160,14 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   }
 
   private (ProfileCallTreeNode, bool)
-    GetOrCreateChildNode(FunctionDebugInfo functionDebugInfo, IRTextFunction function) {
-    var childNode = FindExistingNode(functionDebugInfo, function);
+    GetOrCreateChildNode(FunctionDebugInfo functionDebugInfo, ProfileFunctionId functionId) {
+    var childNode = FindExistingNode(functionDebugInfo, functionId);
 
     if (childNode != null) {
       return (childNode, false);
     }
 
-    childNode = new ProfileCallTreeNode(functionDebugInfo, function, null, this);
+    childNode = new ProfileCallTreeNode(functionDebugInfo, functionId, null, this);
     children_.Add(childNode);
     return (childNode, true);
   }
@@ -162,11 +183,11 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
     callsite.AddTarget(childNode, weight);
   }
 
-  private ProfileCallTreeNode FindExistingNode(FunctionDebugInfo functionDebugInfo, IRTextFunction function) {
+  private ProfileCallTreeNode FindExistingNode(FunctionDebugInfo functionDebugInfo, ProfileFunctionId functionId) {
     for (int i = 0; i < children_.Count; i++) {
       var child = children_[i];
 
-      if (child.Equals(function)) {
+      if (child.FunctionId == functionId) {
         return child;
       }
     }
@@ -208,7 +229,7 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
 
     if (otherNode.HasChildren) {
       foreach (var child in otherNode.children_) {
-        var existingChild = FindChildNode(child.Function);
+        var existingChild = FindChildNode(child.FunctionId);
 
         if (existingChild != null) {
           // Recursively merge child nodes.
@@ -245,10 +266,6 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
         child.Print(builder, level + 1);
       }
     }
-  }
-
-  public bool Equals(IRTextFunction function) {
-    return Function.Equals(function);
   }
 
   public bool Equals(ProfileCallTreeNode other) {
@@ -302,7 +319,7 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
     return new ProfileCallTreeNode {
       Id = Id,
       Kind = Kind,
-      Function = Function,
+      FunctionId = FunctionId,
       FunctionDebugInfo = FunctionDebugInfo,
       Weight = Weight,
       ExclusiveWeight = ExclusiveWeight,
@@ -320,26 +337,26 @@ public sealed class ProfileCallTreeGroupNode : ProfileCallTreeNode {
   public ProfileCallTreeGroupNode() {
   }
 
-  public ProfileCallTreeGroupNode(FunctionDebugInfo funcInfo, IRTextFunction function,
+  public ProfileCallTreeGroupNode(FunctionDebugInfo funcInfo, ProfileFunctionId functionId,
                                   List<ProfileCallTreeNode> nodes = null,
                                   List<ProfileCallTreeNode> children = null,
                                   List<ProfileCallTreeNode> callers = null,
                                   Dictionary<long, ProfileCallSite> callSites = null,
                                   Dictionary<int, (TimeSpan, TimeSpan)> threadWeights = null) :
-    base(funcInfo, function, children, null, callSites, threadWeights) {
+    base(funcInfo, functionId, children, null, callSites, threadWeights) {
     nodes_ = nodes ?? new List<ProfileCallTreeNode>();
     callers_ = callers ?? new List<ProfileCallTreeNode>();
   }
 
-  public ProfileCallTreeGroupNode(FunctionDebugInfo funcInfo, IRTextFunction function,
+  public ProfileCallTreeGroupNode(FunctionDebugInfo funcInfo, ProfileFunctionId functionId,
                                   ProfileCallTreeNodeKind kind) :
-    base(funcInfo, function) {
+    base(funcInfo, functionId) {
     nodes_ = new List<ProfileCallTreeNode>();
     Kind = kind;
   }
 
   public ProfileCallTreeGroupNode(ProfileCallTreeNode baseNode, TimeSpan weight) :
-    this(baseNode.FunctionDebugInfo, baseNode.Function) {
+    this(baseNode.FunctionDebugInfo, baseNode.FunctionId) {
     nodes_.Add(baseNode);
     Weight = weight;
   }
@@ -357,10 +374,10 @@ public sealed class ProfileCallTreeGroupNode : ProfileCallTreeNode {
 // Comparer used for the root nodes in order to ignore the ID part.
 public class ProfileCallTreeNodeComparer : IEqualityComparer<ProfileCallTreeNode> {
   public bool Equals(ProfileCallTreeNode x, ProfileCallTreeNode y) {
-    return x.Equals(y.Function);
+    return x.FunctionId == y.FunctionId;
   }
 
   public int GetHashCode(ProfileCallTreeNode obj) {
-    return HashCode.Combine(obj.Function);
+    return obj.FunctionId.GetHashCode();
   }
 }

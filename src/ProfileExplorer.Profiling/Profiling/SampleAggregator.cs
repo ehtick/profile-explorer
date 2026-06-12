@@ -1,17 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using System.Collections.Concurrent;
-using ProfileExplorer.Profiling.Symbols;
+using ProfileExplorer.Core.Profile;
+using ProfileExplorer.Core.Profile.Data;
 
 namespace ProfileExplorer.Profiling.Profiling;
 
 /// <summary>
-/// Aggregates CPU samples into per-function and per-instruction profiles.
+/// Aggregates CPU samples into per-function profiles keyed by neutral function identity.
 /// Thread-safe — processes samples in parallel chunks.
 /// </summary>
 internal class SampleAggregator {
   private readonly IpResolver ipResolver_;
-  private readonly ConcurrentDictionary<string, FunctionProfileBuilder> builders_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly ConcurrentDictionary<ProfileFunctionId, FunctionProfileData> functions_ = new();
   private TimeSpan totalWeight_;
   private readonly object totalWeightLock_ = new();
 
@@ -31,29 +32,29 @@ internal class SampleAggregator {
       var resolved = ipResolver_.Resolve(sample.InstructionPointer);
       if (resolved == null) continue;
 
-      string key = $"{resolved.ModuleName}!{resolved.FunctionName ?? $"<unknown+0x{resolved.Rva:X}>"}";
+      // Leaf frame: self (exclusive) + inclusive + per-instruction weight.
+      var leaf = GetOrAddFunction(resolved);
 
-      var builder = builders_.GetOrAdd(key, _ => new FunctionProfileBuilder(
-        resolved.ModuleName, resolved.FunctionName ?? $"<unknown+0x{resolved.Rva:X}>",
-        resolved.Rva, resolved.FunctionSize, resolved.IsManaged));
+      lock (leaf) {
+        leaf.ExclusiveWeight += sample.Weight;
+        leaf.Weight += sample.Weight;
+        leaf.AddInstructionSample(resolved.InstructionOffset, sample.Weight);
+      }
 
-      builder.AddSample(resolved.InstructionOffset, sample.Weight);
       batchWeight += sample.Weight;
 
-      // Handle inclusive weight via stack frames.
+      // Caller frames contribute inclusive weight only.
+      // Stack is leaf-first; skip index 0 (leaf — already counted above).
       if (sample.StackFrames is { Count: > 1 }) {
-        // Stack is leaf-first. Skip index 0 (leaf — already counted as exclusive).
         for (int i = 1; i < sample.StackFrames.Count; i++) {
           var callerResolved = ipResolver_.Resolve(sample.StackFrames[i]);
           if (callerResolved == null) continue;
 
-          string callerKey = $"{callerResolved.ModuleName}!{callerResolved.FunctionName ?? $"<unknown+0x{callerResolved.Rva:X}>"}";
+          var caller = GetOrAddFunction(callerResolved);
 
-          var callerBuilder = builders_.GetOrAdd(callerKey, _ => new FunctionProfileBuilder(
-            callerResolved.ModuleName, callerResolved.FunctionName ?? $"<unknown+0x{callerResolved.Rva:X}>",
-            callerResolved.Rva, callerResolved.FunctionSize, callerResolved.IsManaged));
-
-          callerBuilder.AddInclusiveWeight(sample.Weight);
+          lock (caller) {
+            caller.Weight += sample.Weight;
+          }
         }
       }
     }
@@ -64,35 +65,17 @@ internal class SampleAggregator {
   }
 
   /// <summary>
-  /// Build the final function profiles.
+  /// Build the final per-function profile map (snapshot).
   /// </summary>
-  public IReadOnlyList<FunctionProfile> Build(string? processName = null, int? processId = null) {
-    var profiles = new List<FunctionProfile>(builders_.Count);
-    double totalMs = totalWeight_.TotalMilliseconds;
-
-    foreach (var (_, builder) in builders_) {
-      var exclusiveWeight = builder.GetExclusiveWeight();
-      var inclusiveWeight = builder.GetInclusiveWeight();
-      double exclusivePercent = totalMs > 0 ? exclusiveWeight.TotalMilliseconds / totalMs * 100 : 0;
-      double inclusivePercent = totalMs > 0 ? inclusiveWeight.TotalMilliseconds / totalMs * 100 : 0;
-
-      profiles.Add(new FunctionProfile(
-        moduleName: builder.ModuleName,
-        functionName: builder.FunctionName,
-        functionRva: builder.FunctionRva,
-        functionSize: builder.FunctionSize,
-        inclusiveWeight: inclusiveWeight,
-        exclusiveWeight: exclusiveWeight,
-        inclusivePercent: inclusivePercent,
-        exclusivePercent: exclusivePercent,
-        sourceFile: null,  // Populated later by symbol resolution.
-        sourceLine: null,
-        isManaged: builder.IsManaged,
-        instructionWeights: builder.GetInstructionWeights()));
-    }
-
-    return profiles;
+  public Dictionary<ProfileFunctionId, FunctionProfileData> Build() {
+    return new Dictionary<ProfileFunctionId, FunctionProfileData>(functions_);
   }
 
   public TimeSpan TotalWeight => totalWeight_;
+
+  private FunctionProfileData GetOrAddFunction(ResolvedIp resolved) {
+    string funcName = resolved.FunctionName ?? $"<unknown+0x{resolved.Rva:X}>";
+    var id = new ProfileFunctionId(resolved.ModuleName, funcName);
+    return functions_.GetOrAdd(id, _ => new FunctionProfileData(resolved.DebugInfo));
+  }
 }

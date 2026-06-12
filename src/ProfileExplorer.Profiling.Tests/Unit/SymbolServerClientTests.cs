@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Symbols;
 
 namespace ProfileExplorer.Profiling.Tests.Unit;
@@ -51,7 +52,7 @@ public class SymbolServerClientTests {
   [TestMethod]
   public void ParseSymbolPath_SymwebRequiresAuth() {
     var options = new ProfilerOptions {
-      SymbolPaths = ["srv*https://symbolserver.example.com"]
+      SymbolPaths = ["srv*https://symweb.example.com"]
     };
 
     using var client = new SymbolServerClient(options);

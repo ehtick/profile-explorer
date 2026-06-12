@@ -22,13 +22,13 @@ using ProfileExplorer.Core.IR.Tags;
 using ProfileExplorer.Core.Providers;
 using ProfileExplorer.Core.Settings;
 using ProfileExplorer.Core.Utilities;
+using ProfileExplorer.Profiling.Symbols;
 using StringWriter = System.IO.StringWriter;
 
 namespace ProfileExplorer.Core.Binary;
 
 public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
   private const int MaxDemangledFunctionNameLength = 8192;
-  private const int FunctionCacheMissThreshold = 100;
   private const int MaxLogEntryLength = 10240;
 
   private static ConcurrentDictionary<SymbolFileDescriptor, DebugFileSearchResult> resolvedSymbolsCache_ = new();
@@ -41,10 +41,8 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
   private ConcurrentDictionary<string, SourceFileDebugInfo> sourceFileByNameCache_ = new();
   private ConcurrentDictionary<uint, List<SourceStackFrame>> inlineeByRvaCache_ = new();
   private ConcurrentDictionary<long, bool> loggedRvas_ = new();
-  private object cacheLock_ = new();
   private SymbolFileDescriptor symbolFile_;
   private SymbolFileSourceSettings settings_;
-  private SymbolFileCache symbolCache_;
   private SymbolReader symbolReader_;
   private StringWriter symbolReaderLog_;
   private NativeSymbolModule symbolReaderPDB_;
@@ -52,9 +50,7 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
   private IDiaDataSource diaSource_;
   private IDiaSession session_;
   private IDiaSymbol globalSymbol_;
-  private List<FunctionDebugInfo> sortedFuncList_;
-  private bool sortedFuncListOverlapping_;
-  private volatile int funcCacheMisses_;
+  private PdbSymbolProvider libReader_; // Library reader: single source of truth for PDB function-list reading.
   private bool loadFailed_;
   private bool disposed_;
   private bool hasSourceInfo_;
@@ -279,90 +275,21 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
   }
 
   public FunctionDebugInfo FindFunctionByRVA(long rva) {
-    bool shouldLog = loggedRvas_.TryAdd(rva, true); // Returns true if newly added
-    string binaryName = symbolFile_?.FileName ?? "Unknown";
-    
-    try {
-      if (sortedFuncList_ != null) {
-        // Query the function list first. If not found, then still query the actual PDB
-        // because DIA has special lookup for functions split into multiple chunks by PGO for ex.
-        var result = FunctionDebugInfo.BinarySearch(sortedFuncList_, rva, sortedFuncListOverlapping_);
-
-        if (result != null) {
-          if (shouldLog) {
-            DiagnosticLogger.LogInfo($"[PDBDebugInfo] Binary: {binaryName}, RVA: 0x{rva:X}, Function: {result.Name} (found in cache)");
-          }
-          return result;
-        }
-      }
-
-      // Preload the function list only when there are enough queries
-      // to justify the time spent in reading the entire PDB.
-      if (sortedFuncList_ == null &&
-          Interlocked.Increment(ref funcCacheMisses_) >= FunctionCacheMissThreshold) {
-        if (shouldLog) {
-          DiagnosticLogger.LogInfo($"[PDBDebugInfo] Binary: {binaryName}, cache miss threshold reached, loading function list");
-        }
-        GetSortedFunctions();
-
-        if (sortedFuncList_ != null) {
-          var result = FunctionDebugInfo.BinarySearch(sortedFuncList_, rva, sortedFuncListOverlapping_);
-
-          if (result != null) {
-            if (shouldLog) {
-              DiagnosticLogger.LogInfo($"[PDBDebugInfo] Binary: {binaryName}, RVA: 0x{rva:X}, Function: {result.Name} (found after cache load)");
-            }
-            return result;
-          }
-        } else if (shouldLog) {
-          DiagnosticLogger.LogWarning($"[PDBDebugInfo] Binary: {binaryName}, failed to load function list");
-        }
-      }
-
-      // Query the PDB file.
-      var symbol = FindFunctionSymbolByRVA(rva);
-
-      if (symbol != null) {
-        if (shouldLog) {
-          DiagnosticLogger.LogInfo($"[PDBDebugInfo] Binary: {binaryName}, RVA: 0x{rva:X}, Function: {symbol.name} (found via PDB query)");
-        }
-        return new FunctionDebugInfo(symbol.name, symbol.relativeVirtualAddress, (uint)symbol.length);
-      } else if (shouldLog) {
-        DiagnosticLogger.LogWarning($"[PDBDebugInfo] Binary: {binaryName}, RVA: 0x{rva:X}, Function: NOT_RESOLVED (no symbol found)");
-      }
-    }
-    catch (Exception ex) {
-      if (shouldLog) {
-        DiagnosticLogger.LogError($"[PDBDebugInfo] Binary: {binaryName}, RVA: 0x{rva:X}, Function: ERROR ({ex.Message})", ex);
-      }
-      Trace.TraceError($"Failed to find function for RVA {rva}: {ex.Message}");
-    }
-
-    return null;
+    // Delegate to the library reader (faithful superset: binary search + cache-miss threshold +
+    // DIA PGO-split fallback). PE retains its own DIA session for IR annotation / source work.
+    return libReader_?.FindFunctionByRVA(rva);
   }
 
   public FunctionDebugInfo FindFunction(string functionName) {
-    var funcSym = FindFunctionSymbol(functionName);
-    return funcSym != null ? new FunctionDebugInfo(funcSym.name, funcSym.relativeVirtualAddress, (uint)funcSym.length)
-      : null;
+    return libReader_?.FindFunction(functionName);
   }
 
   public IEnumerable<FunctionDebugInfo> EnumerateFunctions() {
-    return GetSortedFunctions();
+    return libReader_?.EnumerateFunctions() ?? Enumerable.Empty<FunctionDebugInfo>();
   }
 
   public List<FunctionDebugInfo> GetSortedFunctions() {
-    if (sortedFuncList_ != null) {
-      return sortedFuncList_;
-    }
-
-    lock (cacheLock_) {
-      var result = Utils.RunSync(GetSortedFunctionsAsync);
-#if DEBUG
-      ValidateSortedList(result);
-#endif
-      return result;
-    }
+    return libReader_?.GetSortedFunctions() ?? new List<FunctionDebugInfo>();
   }
 
   public void Dispose() {
@@ -701,12 +628,18 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
       return false;
     }
 
-    if (other is PDBDebugInfoProvider otherPdb) {
-      // Copy the already loaded function list from another PDB
-      // provider that was created on another thread and is unusable otherwise.
-      symbolCache_ = otherPdb.symbolCache_;
-      sortedFuncList_ = otherPdb.sortedFuncList_;
+    if (other is PDBDebugInfoProvider) {
+      // Cross-thread function-list sharing is no longer needed: reading is delegated to the
+      // library reader below, which manages its own cache.
     }
+
+    // Delegate PDB function-list reading to the library's PdbSymbolProvider (single source of
+    // truth). PE keeps its own DIA session (opened above) for IR annotation and source-server
+    // work. Lazy enumeration mirrors PE's deferred behavior (avoids parsing PDBs with few queries).
+    libReader_ = new PdbSymbolProvider();
+    var readerCacheKey = settings_?.CacheSymbolFiles == true ? symbolFile_ : null;
+    var readerCacheDir = settings_?.CacheSymbolFiles == true ? settings_.SymbolCacheDirectoryPath : null;
+    libReader_.LoadDebugInfo(debugFilePath, readerCacheKey, readerCacheDir, enumerateImmediately: false);
 
     // Check if PDB has source file information (not stripped)
     CheckForSourceInfo();
@@ -779,97 +712,19 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
     return true;
   }
 
-  private bool ValidateSortedList(List<FunctionDebugInfo> list) {
-    for (int i = 1; i < list.Count; i++) {
-      if (list[i].StartRVA < list[i - 1].StartRVA &&
-          list[i].StartRVA != 0 &&
-          list[i - 1].StartRVA != 0) {
-        Debug.Assert(false, "Function list is not sorted by RVA");
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private async Task<List<FunctionDebugInfo>> GetSortedFunctionsAsync() {
-    // This method assumes lock is taken by caller.
-    if (sortedFuncList_ != null) {
-      return sortedFuncList_;
-    }
-
-    if (settings_.CacheSymbolFiles) {
-      // Try to load a previous cached function list file.
-      symbolCache_ = await SymbolFileCache.DeserializeAsync(symbolFile_, settings_.SymbolCacheDirectoryPath).
-        ConfigureAwait(false);
-    }
-
-    if (symbolCache_ != null) {
-      Trace.WriteLine($"PDB cache loaded for {symbolFile_.FileName}");
-      sortedFuncList_ = symbolCache_.FunctionList;
-    }
-    else {
-      // Create sorted list of functions and public symbols.
-      sortedFuncList_ = CollectFunctionDebugInfo();
-
-      if (sortedFuncList_ == null) {
-        return null;
-      }
-
-      if (settings_.CacheSymbolFiles) {
-        // Save symbol cache file.
-        symbolCache_ = new SymbolFileCache() {
-          SymbolFile = symbolFile_,
-          FunctionList = sortedFuncList_
-        };
-
-        await SymbolFileCache.SerializeAsync(symbolCache_, settings_.SymbolCacheDirectoryPath).
-          ConfigureAwait(false);
-        Trace.WriteLine($"PDB cache created for {symbolFile_.FileName}");
-      }
-    }
-
-    // Sorting needed for binary search later.
-    sortedFuncList_.Sort();
-    sortedFuncListOverlapping_ = HasOverlappingFunctions(sortedFuncList_);
-    return sortedFuncList_;
-  }
-
-  private bool HasOverlappingFunctions(List<FunctionDebugInfo> sortedFuncList) {
-    if (sortedFuncList == null || sortedFuncList.Count < 2) {
-      return false;
-    }
-
-    for (int i = 1; i < sortedFuncList.Count; i++) {
-      if (sortedFuncList[i].StartRVA == 0) {
-        continue;
-      }
-
-      for (int k = i - 1; k >= 0 && i - k < 10; k--) {
-        if (sortedFuncList[k].StartRVA != 0 &&
-            sortedFuncList[k].StartRVA <= sortedFuncList[i].StartRVA &&
-            sortedFuncList[k].EndRVA > sortedFuncList[i].EndRVA) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
   private void Dispose(bool disposing) {
     if (disposed_) {
       return;
     }
 
     if (disposing) {
+      libReader_?.Dispose();
+      libReader_ = null;
       symbolReaderPDB_?.Dispose();
       symbolReader_?.Dispose();
       symbolReaderLog_?.Dispose();
       symbolReaderPDB_ = null;
       symbolReader_ = null;
-      symbolCache_ = null;
-      sortedFuncList_ = null;
     }
 
     Unload();
@@ -1169,63 +1024,6 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
       Marshal.ReleaseComObject(inlineeFrameEnum);
       inlineeByRvaCache_.TryAdd(instrRVA, inlineeList);
     }
-  }
-
-  private List<FunctionDebugInfo> CollectFunctionDebugInfo() {
-    if (!EnsureLoaded()) {
-      return null;
-    }
-
-    IDiaEnumSymbols symbolEnum = null;
-    IDiaEnumSymbols publicSymbolEnum = null;
-
-    try {
-      var symbolList = new List<FunctionDebugInfo>();
-      var symbolMap = new Dictionary<long, FunctionDebugInfo>();
-      globalSymbol_.findChildren(SymTagEnum.SymTagFunction, null, 0, out symbolEnum);
-      globalSymbol_.findChildren(SymTagEnum.SymTagPublicSymbol, null, 0, out publicSymbolEnum);
-
-      foreach (IDiaSymbol sym in symbolEnum) {
-        //Trace.WriteLine($" FuncSym {sym.name}: RVA {sym.relativeVirtualAddress:X}, size {sym.length}");
-        var funcInfo = new FunctionDebugInfo(sym.name, sym.relativeVirtualAddress, (uint)sym.length);
-        symbolList.Add(funcInfo);
-        symbolMap[funcInfo.RVA] = funcInfo;
-      }
-
-      foreach (IDiaSymbol sym in publicSymbolEnum) {
-        //Trace.WriteLine($" PublicSym {sym.name}: RVA {sym.relativeVirtualAddress:X} size {sym.length}");
-        var funcInfo = new FunctionDebugInfo(sym.name, sym.relativeVirtualAddress, (uint)sym.length);
-
-        // Public symbols are preferred over function symbols if they have the same RVA and size.
-        // This ensures that the mangled name is saved, set only of public symbols.
-        // This tries to mirror the behavior from FindFunctionSymbolByRVA.
-        if (symbolMap.TryGetValue(funcInfo.RVA, out var existingFuncInfo)) {
-          if (existingFuncInfo.Size == funcInfo.Size) {
-            existingFuncInfo.Name = funcInfo.Name;
-          }
-        }
-        else {
-          // Consider the public sym if it doesn't overlap a function sym.
-          symbolList.Add(funcInfo);
-        }
-      }
-
-      return symbolList;
-    }
-    catch (Exception ex) {
-      Trace.TraceError($"Failed to enumerate functions: {ex.Message}");
-    }
-    finally {
-      if (symbolEnum != null) {
-        Marshal.ReleaseComObject(symbolEnum);
-      }
-
-      if (publicSymbolEnum != null) {
-        Marshal.ReleaseComObject(publicSymbolEnum);
-      }
-    }
-
-    return null;
   }
 
   private IDiaSymbol FindFunctionSymbol(string functionName) {

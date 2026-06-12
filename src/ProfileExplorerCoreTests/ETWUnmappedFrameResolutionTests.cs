@@ -221,13 +221,13 @@ public class ETWUnmappedFrameResolutionTests {
     var result = FunctionProfileProcessor.Compute(profileData, new ProfileSampleFilter());
 
     Assert.AreEqual(TimeSpan.FromMilliseconds(20),
-      result.FunctionProfiles[unknownFunc].ExclusiveWeight,
+      result.GetFunctionProfile(unknownFunc).ExclusiveWeight,
       "Leaf (JIT) should get exclusive weight");
     Assert.AreEqual(TimeSpan.Zero,
-      result.FunctionProfiles[mainFunc].ExclusiveWeight,
+      result.GetFunctionProfile(mainFunc).ExclusiveWeight,
       "Caller (main) should NOT get exclusive weight — it's not the leaf");
     Assert.AreEqual(TimeSpan.FromMilliseconds(20),
-      result.FunctionProfiles[mainFunc].Weight,
+      result.GetFunctionProfile(mainFunc).Weight,
       "Caller (main) should get inclusive weight");
   }
 
@@ -254,7 +254,7 @@ public class ETWUnmappedFrameResolutionTests {
     Assert.AreEqual(TimeSpan.FromMilliseconds(5), result.ProfileWeight,
       "Profile weight must include unmapped-code-only samples");
     Assert.AreEqual(TimeSpan.FromMilliseconds(5),
-      result.FunctionProfiles[unknownFunc].ExclusiveWeight);
+      result.GetFunctionProfile(unknownFunc).ExclusiveWeight);
   }
 
   [TestMethod]

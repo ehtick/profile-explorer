@@ -156,7 +156,7 @@ public class RawProfileData : IDisposable {
 
   public void AddManagedMethodCode(long functionId, int rejitId, int processId, long address, int codeSize,
                                    byte[] codeBytes) {
-    var info = new DotNetDebugInfoProvider.MethodCode(address, codeSize, codeBytes);
+    var info = new MethodCode(address, codeSize, codeBytes);
     var data = GetOrCreateManagedData(processId);
     data.managedMethodCodeMap_[new ManagedMethodId(functionId, rejitId)] = info;
   }
@@ -165,7 +165,7 @@ public class RawProfileData : IDisposable {
     var data = GetOrCreateManagedData(processId);
 
     if (data.managedMethodCodeMap_.TryGetValue(new ManagedMethodId(functionId, rejitId), out var code)) {
-      code.CallTargets.Add(new DotNetDebugInfoProvider.AddressNamePair(address, name));
+      code.CallTargets.Add(new AddressNamePair(address, name));
     }
   }
 

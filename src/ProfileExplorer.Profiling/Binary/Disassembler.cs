@@ -9,55 +9,14 @@ using System.Security;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
-using ProfileExplorer.Core.Compilers.ASM;
-using ProfileExplorer.Core.IR;
 using ProfileExplorer.Core.Providers;
-using ProfileExplorer.Core.Utilities;
 
 namespace ProfileExplorer.Core.Binary;
 
-public delegate void DisassemblerProgressHandler(DisassemblerProgress info);
-
-public enum DisassemblerStage {
-  Disassembling,
-  PostProcessing
-}
-
-public interface IDisassembler {
-  DisassemberResult Disassemble(string imagePath, ICompilerInfoProvider compilerInfo,
-                                DisassemblerProgressHandler progressCallback = null,
-                                CancelableTask cancelableTask = null);
-
-  Task<DisassemberResult> DisassembleAsync(string imagePath, ICompilerInfoProvider compilerInfo,
-                                           DisassemblerProgressHandler progressCallback = null,
-                                           CancelableTask cancelableTask = null);
-
-  bool EnsureDisassemblerAvailable();
-}
-
-public class DisassemblerOptions {
-  public bool IncludeBytes { get; set; }
-}
-
-public class DisassemblerProgress {
-  public DisassemblerProgress(DisassemblerStage stage) {
-    Stage = stage;
-  }
-
-  public DisassemblerStage Stage { get; set; }
-  public int Total { get; set; }
-  public int Current { get; set; }
-}
-
-public class DisassemberResult {
-  public DisassemberResult(string disassemblyPath, string debugInfoFilePath) {
-    DisassemblyPath = disassemblyPath;
-    DebugInfoFilePath = debugInfoFilePath;
-  }
-
-  public string DisassemblyPath { get; set; }
-  public string DebugInfoFilePath { get; set; }
-}
+/// <summary>
+/// A single disassembled instruction with resolved operand text.
+/// </summary>
+public record DisassembledInstruction(long Address, long Rva, string Text, int Size);
 
 public class Disassembler : IDisposable {
   public delegate string SymbolNameResolverDelegate(long address);
@@ -65,7 +24,7 @@ public class Disassembler : IDisposable {
   private List<(ReadOnlyMemory<byte> Data, long StartRVA)> codeSectionData_;
   private long baseAddress_;
   private Machine architecture_;
-  private IDebugInfoProvider debugInfo_;
+  private ISymbolDebugInfo debugInfo_;
   private Interop.DisassemblerHandle disasmHandle_;
   private bool checkValidCallAddress_;
   private SymbolNameResolverDelegate symbolNameResolver_;
@@ -76,7 +35,7 @@ public class Disassembler : IDisposable {
   private Disassembler(Machine architecture,
                        PEBinaryInfoProvider peInfo,
                        long baseAddress = 0,
-                       IDebugInfoProvider debugInfo = null,
+                       ISymbolDebugInfo debugInfo = null,
                        FunctionNameFormatter funcNameFormatter = null,
                        SymbolNameResolverDelegate symbolNameResolver = null) {
     peInfo_ = peInfo;
@@ -94,7 +53,7 @@ public class Disassembler : IDisposable {
     GC.SuppressFinalize(this);
   }
 
-  public static Disassembler CreateForBinary(string binaryFilePath, IDebugInfoProvider debugInfo,
+  public static Disassembler CreateForBinary(string binaryFilePath, ISymbolDebugInfo debugInfo,
                                              FunctionNameFormatter funcNameFormatter) {
     var peInfo = new PEBinaryInfoProvider(binaryFilePath);
 
@@ -107,7 +66,7 @@ public class Disassembler : IDisposable {
                             binaryInfo.ImageBase, debugInfo, funcNameFormatter);
   }
 
-  public static Disassembler CreateForMachine(IDebugInfoProvider debugInfo,
+  public static Disassembler CreateForMachine(ISymbolDebugInfo debugInfo,
                                               FunctionNameFormatter funcNameFormatter) {
     return new Disassembler(debugInfo.Architecture.Value, null, 0, debugInfo, funcNameFormatter);
   }
@@ -175,6 +134,40 @@ public class Disassembler : IDisposable {
     }
 
     return builder.ToString();
+  }
+
+  /// <summary>
+  /// Disassemble a function into a list of individual instructions, with operand text
+  /// (call/jump targets resolved to symbol names when debug info is available).
+  /// </summary>
+  public List<DisassembledInstruction> DisassembleToList(FunctionDebugInfo funcInfo) {
+    return DisassembleToList(funcInfo.StartRVA, funcInfo.Size);
+  }
+
+  public List<DisassembledInstruction> DisassembleToList(long startRVA, long size) {
+    var list = new List<DisassembledInstruction>();
+
+    if (startRVA == 0 || size == 0) {
+      return list;
+    }
+
+    try {
+      DisassembleInstructions(startRVA, size, startRVA + baseAddress_, (instr) => {
+        var sb = new StringBuilder();
+        AppendMnemonic(instr, sb);
+        sb.Append("  ");
+        AppendOperands(instr, startRVA, size, sb);
+        list.Add(new DisassembledInstruction(instr.Address, instr.Address - baseAddress_,
+                                             sb.ToString(), instr.Size));
+      });
+    }
+    catch (Exception ex) {
+#if DEBUG
+      Trace.TraceError($"Failed to disassemble code list at RVA {startRVA}, size {size}: {ex.Message}");
+#endif
+    }
+
+    return list;
   }
 
   private void Initialize(bool checkValidCallAddress) {
@@ -448,21 +441,23 @@ public class Disassembler : IDisposable {
     switch (architecture_) {
       case Machine.I386:
       case Machine.Amd64: {
-        if (x86Opcodes.GetOpcodeInfo(instr.MnemonicString, out var info)) {
-          isJump = info.Kind == InstructionKind.Goto;
-          return info.Kind == InstructionKind.Call || isJump;
-        }
-
-        return false;
+        // Resolve operand symbol names for direct calls and unconditional jumps
+        // (matches x86Opcodes Call/Goto classification: CALL, SYSCALL, JMP).
+        string mnemonic = instr.MnemonicString;
+        isJump = mnemonic.Equals("jmp", StringComparison.OrdinalIgnoreCase);
+        return isJump ||
+               mnemonic.Equals("call", StringComparison.OrdinalIgnoreCase) ||
+               mnemonic.Equals("syscall", StringComparison.OrdinalIgnoreCase);
       }
       case Machine.Arm:
       case Machine.Arm64: {
-        if (ARM64Opcodes.GetOpcodeInfo(instr.MnemonicString, out var info)) {
-          isJump = info.Kind == InstructionKind.Goto;
-          return info.Kind == InstructionKind.Call || isJump;
-        }
-
-        return false;
+        // Matches ARM64Opcodes Call/Goto classification: B, BR (Goto), BL, BLR (Call).
+        string mnemonic = instr.MnemonicString;
+        isJump = mnemonic.Equals("b", StringComparison.OrdinalIgnoreCase) ||
+                 mnemonic.Equals("br", StringComparison.OrdinalIgnoreCase);
+        return isJump ||
+               mnemonic.Equals("bl", StringComparison.OrdinalIgnoreCase) ||
+               mnemonic.Equals("blr", StringComparison.OrdinalIgnoreCase);
       }
     }
 

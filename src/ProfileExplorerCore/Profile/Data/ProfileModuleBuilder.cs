@@ -56,6 +56,17 @@ public sealed class ProfileModuleBuilder : IDisposable {
   public bool Initialized { get; set; }
   public bool IsManaged { get; set; }
 
+  /// <summary>
+  /// Registers every IRTextFunction this builder has created into the profile's neutral-identity
+  /// resolver, so call-tree nodes (keyed by ProfileFunctionId) can resolve back for navigation.
+  /// Must be called single-threaded after profile processing completes.
+  /// </summary>
+  public void RegisterFunctionsInto(ProfileData profileData) {
+    foreach (var pair in functionMap_.Values) {
+      profileData.RegisterFunction(pair.Item1);
+    }
+  }
+
   public async Task<bool> Initialize(BinaryFileDescriptor binaryInfo,
                                      SymbolFileSourceSettings symbolSettings,
                                      IDebugInfoProvider debugInfo,

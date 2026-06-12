@@ -17,6 +17,7 @@ using ProfileExplorer.UI.Document;
 using ProfileExplorer.UI.Profile.Document;
 using ProfileExplorer.Core.Session;
 using ProfileExplorer.Core.Profile.Processing;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.Data;
 
@@ -403,7 +404,7 @@ public static class ProfilingUtils {
         // since the same func. name may be used in multiple modules,
         // and also because the name matching may use Regex.
         var funcNodeList = new List<ProfileCallTreeNode>();
-        var funcMap = new Dictionary<IRTextFunction, List<ProfileCallTreeNode>>();
+        var funcMap = new Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>>();
 
         if (startNode == null) {
           CollectGlobalMarkedFunctions(marking, funcNodeList, funcMap, session);
@@ -459,7 +460,7 @@ public static class ProfilingUtils {
 
   private static void CollectCallTreeMarkedFunctions(FunctionMarkingStyle marking, ProfileCallTreeNode startNode,
                                                      List<ProfileCallTreeNode> funcNodeList,
-                                                     Dictionary<IRTextFunction, List<ProfileCallTreeNode>> funcNodeMap,
+                                                     Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>> funcNodeMap,
                                                      ISession session) {
     var nameProvider = session.CompilerInfo.NameProvider;
     var visited = new HashSet<ProfileCallTreeNode>();
@@ -474,9 +475,9 @@ public static class ProfilingUtils {
       visited.Add(node);
 #endif
 
-      if (marking.NameMatches(nameProvider.FormatFunctionName(node.Function.Name))) {
+      if (marking.NameMatches(nameProvider.FormatFunctionName(node.FunctionName))) {
         funcNodeList.Add(node); // Per-category list.
-        var instanceNodeList = funcNodeMap.GetOrAddValue(node.Function);
+        var instanceNodeList = funcNodeMap.GetOrAddValue(node.FunctionId);
         instanceNodeList.Add(node);
       }
 
@@ -490,7 +491,7 @@ public static class ProfilingUtils {
 
   private static void CollectGlobalMarkedFunctions(FunctionMarkingStyle marking,
                                                    List<ProfileCallTreeNode> funcNodeList,
-                                                   Dictionary<IRTextFunction, List<ProfileCallTreeNode>> funcNodeMap,
+                                                   Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>> funcNodeMap,
                                                    ISession session) {
     var nameProvider = session.CompilerInfo.NameProvider;
 
@@ -510,7 +511,7 @@ public static class ProfilingUtils {
           funcNodeList.AddRange(nodeList); // Per-category list.
         }
 
-        funcNodeMap[func] = nodeList;
+        funcNodeMap[func.ToProfileId()] = nodeList;
       }
     }
   }
@@ -877,7 +878,7 @@ public static class ProfilingUtils {
       }
 
       var funcValue = new ProfileMenuItem(funcText, node.Weight.Ticks, funcWeightPercentage) {
-        PrefixText = node.Function.FormatFunctionName(session, 60),
+        PrefixText = node.FormatFunctionName(session, 60),
         ToolTip = tooltip,
         ShowPercentageBar = markerSettings.ShowPercentageBar(funcWeightPercentage),
         TextWeight = markerSettings.PickTextWeight(funcWeightPercentage),
@@ -886,7 +887,7 @@ public static class ProfilingUtils {
 
       var nodeItem = new MenuItem {
         Header = funcValue,
-        Tag = node.Function,
+        Tag = node.ResolveFunction(session),
         HeaderTemplate = valueTemplate,
         Style = menuStyle
       };

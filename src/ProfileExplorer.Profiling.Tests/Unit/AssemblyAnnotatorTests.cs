@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 using System.Reflection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Profiling.Disassembly;
 
 namespace ProfileExplorer.Profiling.Tests.Unit;

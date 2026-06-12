@@ -9,20 +9,12 @@ using System.Text;
 using System.Threading;
 using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Core.Profile.Data;
-using ProfileExplorer.Core.Utilities;
 
 namespace ProfileExplorer.Core.Profile.CallTree;
 
-public enum ProfileCallTreeNodeKind {
-  Unset = 0,
-  NativeUser = 1,
-  NativeKernel = 2,
-  Managed = 3
-}
-
 public sealed class ProfileCallTree {
-  private ConcurrentDictionary<IRTextFunction, ProfileCallTreeNode> rootNodes_;
-  private Dictionary<IRTextFunction, List<ProfileCallTreeNode>> funcToNodesMap_;
+  private ConcurrentDictionary<ProfileFunctionId, ProfileCallTreeNode> rootNodes_;
+  private Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>> funcToNodesMap_;
   private Dictionary<long, ProfileCallTreeNode> nodeIdMap_;
   private int nextNodeId_;
 
@@ -31,7 +23,7 @@ public sealed class ProfileCallTree {
     InitializeReferenceMembers();
   }
 
-  public List<ProfileCallTreeNode> RootNodes => rootNodes_.ToValueList();
+  public List<ProfileCallTreeNode> RootNodes => new(rootNodes_.Values);
 
   public TimeSpan TotalRootNodesWeight {
     get {
@@ -45,40 +37,40 @@ public sealed class ProfileCallTree {
     }
   }
 
-  public void UpdateCallTree(ref ProfileSample sample, ResolvedProfileStack resolvedStack) {
+  public void UpdateCallTree(TimeSpan sampleWeight, IResolvedCallStack resolvedStack) {
     // Build call tree. Note that the call tree methods themselves are thread-safe.
     bool isRootFrame = true;
     ProfileCallTreeNode prevNode = null;
-    ResolvedProfileStackFrame prevFrame = null;
-    var sampleWeight = sample.Weight;
+    long prevFrameRVA = 0;
+    int threadId = resolvedStack.ThreadId;
 
     for (int k = resolvedStack.FrameCount - 1; k >= 0; k--) {
-      var resolvedFrame = resolvedStack.StackFrames[k];
+      var resolvedFrame = resolvedStack.GetFrame(k);
 
-      if (resolvedFrame.FrameRVA == 0 && resolvedFrame.FrameDetails.DebugInfo == null) {
+      if (resolvedFrame.FrameRva == 0 && resolvedFrame.DebugInfo == null) {
         continue;
       }
 
       ProfileCallTreeNode node = null;
 
       if (isRootFrame) {
-        node = AddRootNode(resolvedFrame.FrameDetails.DebugInfo, resolvedFrame.FrameDetails.Function);
+        node = AddRootNode(resolvedFrame.DebugInfo, resolvedFrame.FunctionId);
         isRootFrame = false;
       }
       else {
-        node = AddChildNode(prevNode, resolvedFrame.FrameDetails.DebugInfo, resolvedFrame.FrameDetails.Function);
-        prevNode.AddCallSite(node, prevFrame.FrameRVA, sampleWeight);
+        node = AddChildNode(prevNode, resolvedFrame.DebugInfo, resolvedFrame.FunctionId);
+        prevNode.AddCallSite(node, prevFrameRVA, sampleWeight);
       }
 
       node.AccumulateWeight(sampleWeight);
-      node.AccumulateWeight(sampleWeight, TimeSpan.Zero, resolvedStack.Context.ThreadId);
+      node.AccumulateWeight(sampleWeight, TimeSpan.Zero, threadId);
 
       // Set the user/kernel-mode context of the function.
       if (node.Kind == ProfileCallTreeNodeKind.Unset) {
-        if (resolvedFrame.FrameDetails.IsKernelCode) {
+        if (resolvedFrame.IsKernelCode) {
           node.Kind = ProfileCallTreeNodeKind.NativeKernel;
         }
-        else if (resolvedFrame.FrameDetails.IsManagedCode) {
+        else if (resolvedFrame.IsManagedCode) {
           node.Kind = ProfileCallTreeNodeKind.Managed;
         }
         else {
@@ -86,31 +78,30 @@ public sealed class ProfileCallTree {
         }
       }
 
-      //node.RecordSample(sample, resolvedFrame); //? Remove
       prevNode = node;
-      prevFrame = resolvedFrame;
+      prevFrameRVA = resolvedFrame.FrameRva;
     }
 
     // Last function on the stack gets the exclusive weight.
     if (prevNode != null) {
       prevNode.AccumulateExclusiveWeight(sampleWeight);
-      prevNode.AccumulateWeight(TimeSpan.Zero, sampleWeight, resolvedStack.Context.ThreadId);
+      prevNode.AccumulateWeight(TimeSpan.Zero, sampleWeight, threadId);
     }
   }
 
-  private ProfileCallTreeNode AddRootNode(FunctionDebugInfo funcInfo, IRTextFunction function) {
-    if (rootNodes_.TryGetValue(function, out var existingNode)) {
+  private ProfileCallTreeNode AddRootNode(FunctionDebugInfo funcInfo, ProfileFunctionId id) {
+    if (rootNodes_.TryGetValue(id, out var existingNode)) {
       return existingNode;
     }
 
-    var node = rootNodes_.GetOrAdd(function, static (func, info) => new ProfileCallTreeNode(info, func), funcInfo);
+    var node = rootNodes_.GetOrAdd(id, _ => new ProfileCallTreeNode(funcInfo, id));
     RegisterFunctionTreeNode(node);
     return node;
   }
 
   private ProfileCallTreeNode AddChildNode(ProfileCallTreeNode node, FunctionDebugInfo funcInfo,
-                                           IRTextFunction function) {
-    (var childNode, bool isNewNode) = node.AddChild(funcInfo, function);
+                                           ProfileFunctionId id) {
+    (var childNode, bool isNewNode) = node.AddChild(funcInfo, id);
 
     if (isNewNode) {
       RegisterFunctionTreeNode(childNode);
@@ -122,7 +113,7 @@ public sealed class ProfileCallTree {
   private void RegisterFunctionTreeNode(ProfileCallTreeNode node) {
     // Add an unique instance of the node for a function.
     node.Id = Interlocked.Increment(ref nextNodeId_);
-    ref var nodeList = ref CollectionsMarshal.GetValueRefOrAddDefault(funcToNodesMap_, node.Function, out bool exists);
+    ref var nodeList = ref CollectionsMarshal.GetValueRefOrAddDefault(funcToNodesMap_, node.FunctionId, out bool exists);
 
     if (!exists) {
       nodeList = new List<ProfileCallTreeNode>();
@@ -145,7 +136,7 @@ public sealed class ProfileCallTree {
       }
     }
 
-    return nodeIdMap_.GetValueOrNull(nodeId);
+    return nodeIdMap_.TryGetValue(nodeId, out var foundNode) ? foundNode : null;
   }
 
   public ProfileCallTreeNode FindMatchingNode(ProfileCallTreeNode queryNode) {
@@ -155,7 +146,7 @@ public sealed class ProfileCallTree {
       return null;
     }
 
-    if (!funcToNodesMap_.TryGetValue(queryNode.Function, out var nodeList)) {
+    if (!funcToNodesMap_.TryGetValue(queryNode.FunctionId, out var nodeList)) {
       return null;
     }
 
@@ -171,7 +162,7 @@ public sealed class ProfileCallTree {
       var nodeB = queryNode;
 
       while (nodeA != null && nodeB != null) {
-        if (!nodeA.Function.Equals(nodeB.Function)) {
+        if (nodeA.FunctionId != nodeB.FunctionId) {
           break;
         }
 
@@ -187,16 +178,16 @@ public sealed class ProfileCallTree {
     return null;
   }
 
-  public List<ProfileCallTreeNode> GetCallTreeNodes(IRTextFunction function) {
-    if (funcToNodesMap_.TryGetValue(function, out var nodeList)) {
+  public List<ProfileCallTreeNode> GetCallTreeNodes(ProfileFunctionId functionId) {
+    if (funcToNodesMap_.TryGetValue(functionId, out var nodeList)) {
       return nodeList;
     }
 
     return new List<ProfileCallTreeNode>();
   }
 
-  public List<ProfileCallTreeNode> GetSortedCallTreeNodes(IRTextFunction function) {
-    var nodeList = GetCallTreeNodes(function);
+  public List<ProfileCallTreeNode> GetSortedCallTreeNodes(ProfileFunctionId functionId) {
+    var nodeList = GetCallTreeNodes(functionId);
 
     if (nodeList.Count < 2) {
       return nodeList;
@@ -210,8 +201,8 @@ public sealed class ProfileCallTree {
     return nodeListCopy;
   }
 
-  public ProfileCallTreeNode GetCombinedCallTreeNode(IRTextFunction function, ProfileCallTreeNode parentNode = null) {
-    var nodes = GetSortedCallTreeNodes(function);
+  public ProfileCallTreeNode GetCombinedCallTreeNode(ProfileFunctionId functionId, ProfileCallTreeNode parentNode = null) {
+    var nodes = GetSortedCallTreeNodes(functionId);
     return CombinedCallTreeNodesImpl(nodes, true, parentNode);
   }
 
@@ -284,16 +275,19 @@ public sealed class ProfileCallTree {
       // Sum up per-thread weights.
       if (node.HasThreadWeights) {
         foreach (var pair in node.ThreadWeights) {
-          threadsMap.AccumulateValue(pair.Key,
-                                     countWeight ? pair.Value.Weight : TimeSpan.Zero,
-                                     pair.Value.ExclusiveWeight);
+          ref var threadValue = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            threadsMap, pair.Key, out bool _);
+          threadValue.Item1 = TimeSpan.FromTicks(
+            threadValue.Item1.Ticks + (countWeight ? pair.Value.Weight.Ticks : 0));
+          threadValue.Item2 = TimeSpan.FromTicks(
+            threadValue.Item2.Ticks + pair.Value.ExclusiveWeight.Ticks);
         }
       }
 
       if (node.HasChildren) {
         foreach (var childNode in node.Children) {
           if (!childrenSet.TryGetValue(childNode, out var existingNode)) {
-            existingNode = new ProfileCallTreeNode(childNode.FunctionDebugInfo, childNode.Function);
+            existingNode = new ProfileCallTreeNode(childNode.FunctionDebugInfo, childNode.FunctionId);
             existingNode.Id = childNode.Id;
             childrenSet.Add(existingNode);
           }
@@ -306,7 +300,7 @@ public sealed class ProfileCallTree {
       if (node.HasCallers) {
         void HandleCaller(ProfileCallTreeNode caller) {
           if (!callersSet.TryGetValue(caller, out var existingNode)) {
-            existingNode = new ProfileCallTreeNode(caller.FunctionDebugInfo, caller.Function);
+            existingNode = new ProfileCallTreeNode(caller.FunctionDebugInfo, caller.FunctionId);
             existingNode.Id = caller.Id;
             callersSet.Add(existingNode);
           }
@@ -340,7 +334,7 @@ public sealed class ProfileCallTree {
       }
     }
 
-    return new ProfileCallTreeGroupNode(nodes[0].FunctionDebugInfo, nodes[0].Function, nodes,
+    return new ProfileCallTreeGroupNode(nodes[0].FunctionDebugInfo, nodes[0].FunctionId, nodes,
                                         childrenSet.ToList(), callersSet.ToList(),
                                         callSiteMap, threadsMap) {
       Weight = weight, ExclusiveWeight = excWeight,
@@ -364,8 +358,8 @@ public sealed class ProfileCallTree {
     return false;
   }
 
-  public TimeSpan GetCombinedCallTreeNodeWeight(IRTextFunction function) {
-    var nodes = GetCallTreeNodes(function);
+  public TimeSpan GetCombinedCallTreeNodeWeight(ProfileFunctionId functionId) {
+    var nodes = GetCallTreeNodes(functionId);
 
     if (nodes == null) {
       return TimeSpan.Zero;
@@ -403,7 +397,7 @@ public sealed class ProfileCallTree {
   public (List<ProfileCallTreeNode> Functions,
     List<ModuleProfileInfo> Modules) GetTopFunctionsAndModules(ProfileCallTreeNode node) {
     var moduleMap = new Dictionary<string, ModuleProfileInfo>();
-    var funcMap = new Dictionary<IRTextFunction, ProfileCallTreeNode>();
+    var funcMap = new Dictionary<ProfileFunctionId, ProfileCallTreeNode>();
 
     if (node is ProfileCallTreeGroupNode groupNode) {
       foreach (var nestedNode in groupNode.Nodes) {
@@ -453,19 +447,19 @@ public sealed class ProfileCallTree {
     }
 
     moduleList.Sort((a, b) => b.Weight.CompareTo(a.Weight));
-    var funcList = funcMap.ToValueList();
+    var funcList = new List<ProfileCallTreeNode>(funcMap.Values);
     funcList.Sort((a, b) => b.ExclusiveWeight.CompareTo(a.ExclusiveWeight));
     return (funcList, moduleList);
   }
 
   private void CollectFunctionsAndModules(ProfileCallTreeNode node,
-                                          Dictionary<IRTextFunction, ProfileCallTreeNode> funcMap,
+                                          Dictionary<ProfileFunctionId, ProfileCallTreeNode> funcMap,
                                           Dictionary<string, ModuleProfileInfo> moduleMap) {
     // Combine all instances of a function under the node.
-    ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(funcMap, node.Function, out bool exists);
+    ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(funcMap, node.FunctionId, out bool exists);
 
     if (!exists) {
-      entry = new ProfileCallTreeGroupNode(node.FunctionDebugInfo, node.Function, node.Kind);
+      entry = new ProfileCallTreeGroupNode(node.FunctionDebugInfo, node.FunctionId, node.Kind);
     }
 
     var groupEntry = (ProfileCallTreeGroupNode)entry;
@@ -505,7 +499,7 @@ public sealed class ProfileCallTree {
 
     // Merge the other data structures.
     if (otherTree.funcToNodesMap_ != null) {
-      funcToNodesMap_ ??= new Dictionary<IRTextFunction, List<ProfileCallTreeNode>>();
+      funcToNodesMap_ ??= new Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>>();
       var existingNodesSet = new HashSet<ProfileCallTreeNode>();
 
       foreach (var list in funcToNodesMap_.Values) {
@@ -642,8 +636,8 @@ public sealed class ProfileCallTree {
   }
 
   private void InitializeReferenceMembers() {
-    rootNodes_ ??= new ConcurrentDictionary<IRTextFunction, ProfileCallTreeNode>();
-    funcToNodesMap_ ??= new Dictionary<IRTextFunction, List<ProfileCallTreeNode>>();
+    rootNodes_ ??= new ConcurrentDictionary<ProfileFunctionId, ProfileCallTreeNode>();
+    funcToNodesMap_ ??= new Dictionary<ProfileFunctionId, List<ProfileCallTreeNode>>();
   }
 
   public void ResetTags() {
@@ -654,8 +648,8 @@ public sealed class ProfileCallTree {
     }
   }
 
-  public ProfileCallTreeNode FindRootNode(IRTextFunction func) {
-    if (rootNodes_.TryGetValue(func, out var node)) {
+  public ProfileCallTreeNode FindRootNode(ProfileFunctionId funcId) {
+    if (rootNodes_.TryGetValue(funcId, out var node)) {
       return node;
     }
 

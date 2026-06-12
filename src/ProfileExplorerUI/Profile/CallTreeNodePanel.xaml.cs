@@ -21,6 +21,7 @@ using ProfileExplorer.Core;
 using ProfileExplorer.UI.Controls;
 using PlotCommands = OxyPlot.PlotCommands;
 using VerticalAlignment = System.Windows.VerticalAlignment;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Core.Profile.Processing;
@@ -253,7 +254,7 @@ public partial class CallTreeNodePanel : ToolPanelControl, INotifyPropertyChange
     if (((FrameworkElement)obj).DataContext is ThreadListItem threadItem &&
         instancesNode_.CallTreeNode != null) {
       var filter = new ProfileSampleFilter(threadItem.ThreadId);
-      await IRDocumentPopupInstance.ShowPreviewPopup(instancesNode_.CallTreeNode.Function, "",
+      await IRDocumentPopupInstance.ShowPreviewPopup(instancesNode_.CallTreeNode.ResolveFunction(Session), "",
                                                      ThreadsExpander, Session, filter);
     }
   });
@@ -418,11 +419,11 @@ public partial class CallTreeNodePanel : ToolPanelControl, INotifyPropertyChange
       instanceNodes_ = await Task.Run(() => {
         // For a node group, combine the instances for each node.
         var instanceNodes = new List<ProfileCallTreeNode>();
-        var handledFuncts = new HashSet<IRTextFunction>();
+        var handledFuncts = new HashSet<ProfileFunctionId>();
 
         foreach (var n in groupNode.Nodes) {
-          if (handledFuncts.Add(n.Function)) {
-            instanceNodes.AddRange(callTree.GetSortedCallTreeNodes(n.Function));
+          if (handledFuncts.Add(n.FunctionId)) {
+            instanceNodes.AddRange(callTree.GetSortedCallTreeNodes(n.FunctionId));
           }
         }
 
@@ -430,7 +431,7 @@ public partial class CallTreeNodePanel : ToolPanelControl, INotifyPropertyChange
       });
     }
     else {
-      instanceNodes_ = callTree.GetSortedCallTreeNodes(node.Function);
+      instanceNodes_ = callTree.GetSortedCallTreeNodes(node.FunctionId);
     }
 
     if (instanceNodes_.Count == 0) {
@@ -447,7 +448,7 @@ public partial class CallTreeNodePanel : ToolPanelControl, INotifyPropertyChange
       combinedNode = groupNode;
     }
     else {
-      combinedNode = await Task.Run(() => callTree.GetCombinedCallTreeNode(node.Function));
+      combinedNode = await Task.Run(() => callTree.GetCombinedCallTreeNode(node.FunctionId));
     }
 
     InstancesNode = SetupNodeExtension(combinedNode, Session);
@@ -821,7 +822,7 @@ public partial class CallTreeNodePanel : ToolPanelControl, INotifyPropertyChange
   }
 
   private async void PreviewButton_OnClick(object sender, RoutedEventArgs e) {
-    await IRDocumentPopupInstance.ShowPreviewPopup(instancesNode_.CallTreeNode.Function, "",
+    await IRDocumentPopupInstance.ShowPreviewPopup(instancesNode_.CallTreeNode.ResolveFunction(Session), "",
                                                    ThreadsExpander, Session);
   }
 

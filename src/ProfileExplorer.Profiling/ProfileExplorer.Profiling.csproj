@@ -1,10 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Library is Windows-only at runtime (DIA/Capstone/COM); TFM is net8.0 so net8.0 consumers
+         (e.g. ProfileExplorerCore) can reference it. Suppress the platform-compat analyzer. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
     <RootNamespace>ProfileExplorer.Profiling</RootNamespace>
     <AssemblyName>ProfileExplorer.Profiling</AssemblyName>
     <Description>Function-level CPU profiling, disassembly, and performance counter attribution from ETW traces.</Description>
@@ -44,8 +47,8 @@
 
   <!-- Ensure native DLLs from runtimes/ folder are copied to output by consumers -->
   <ItemGroup>
-    <None Include="external\Dia2Lib.dll" Pack="true" PackagePath="lib\net8.0-windows7.0\Dia2Lib.dll" />
-    <None Include="build\net8.0-windows\ProfileExplorer.Profiling.targets" Pack="true" PackagePath="build\net8.0-windows7.0" />
+    <None Include="external\Dia2Lib.dll" Pack="true" PackagePath="lib\net8.0\Dia2Lib.dll" />
+    <None Include="build\net8.0\ProfileExplorer.Profiling.targets" Pack="true" PackagePath="build\net8.0" />
   </ItemGroup>
 
   <!-- MSBuild targets file to copy native deps for package consumers -->

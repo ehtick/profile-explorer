@@ -61,7 +61,7 @@ public sealed class FunctionSamplesProcessor : ProfileSampleProcessor {
         continue;
       }
 
-      if (stackFrame.FrameDetails.Function.Equals(currentNode.Function)) {
+      if (currentNode.FunctionId == stackFrame.FrameDetails.Function.ToProfileId()) {
         // Continue checking if the callers show up on the stack trace
         // to make the search context-sensitive.
         match = true;
