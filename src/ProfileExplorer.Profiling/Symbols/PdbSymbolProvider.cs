@@ -284,7 +284,7 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
       var symbolMap = new Dictionary<long, FunctionDebugInfo>();
       var symbolList = new List<FunctionDebugInfo>();
 
-      void Collect(SymTagEnum tag) {
+      void Enumerate(SymTagEnum tag, Action<string, long, uint> handle) {
         globalSymbol_.findChildren(tag, null, 0, out var enumSymbols);
         if (enumSymbols == null) return;
         try {
@@ -292,20 +292,7 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
             enumSymbols.Next(1, out var sym, out uint fetched);
             if (fetched == 0) break;
             try {
-              string name = sym.name ?? "";
-              long rva = sym.relativeVirtualAddress;
-              uint size = (uint)sym.length;
-              if (tag == SymTagEnum.SymTagPublicSymbol && symbolMap.TryGetValue(rva, out var existing) && existing.Size == size) {
-                // Public symbols are preferred over function symbols when they share the same
-                // RVA and size: this saves the mangled name (only public symbols carry it),
-                // mirroring PE's CollectFunctionDebugInfo / FindFunctionSymbolByRVA behavior.
-                existing.Name = name;
-              }
-              else if (!symbolMap.ContainsKey(rva)) {
-                var info = new FunctionDebugInfo(name, rva, size);
-                symbolList.Add(info);
-                symbolMap[rva] = info;
-              }
+              handle(sym.name ?? "", sym.relativeVirtualAddress, (uint)sym.length);
             }
             finally { Marshal.ReleaseComObject(sym); }
           }
@@ -313,8 +300,28 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
         finally { Marshal.ReleaseComObject(enumSymbols); }
       }
 
-      Collect(SymTagEnum.SymTagFunction);
-      Collect(SymTagEnum.SymTagPublicSymbol);
+      // Mirror PE's legacy CollectFunctionDebugInfo exactly so function naming matches the
+      // historical behavior, including ICF-folded addresses that map to multiple symbol names:
+      // add every function symbol (the last one at a given RVA wins the map slot), then let a
+      // public symbol with the same RVA+size overwrite the name (public symbols carry the
+      // mangled name). Public symbols at an RVA with no function symbol are added as-is.
+      Enumerate(SymTagEnum.SymTagFunction, (name, rva, size) => {
+        var info = new FunctionDebugInfo(name, rva, size);
+        symbolList.Add(info);
+        symbolMap[rva] = info;
+      });
+
+      Enumerate(SymTagEnum.SymTagPublicSymbol, (name, rva, size) => {
+        if (symbolMap.TryGetValue(rva, out var existing)) {
+          if (existing.Size == size) {
+            existing.Name = name;
+          }
+        }
+        else {
+          symbolList.Add(new FunctionDebugInfo(name, rva, size));
+        }
+      });
+
       InitializeFunctionList(symbolList);
     }
     catch { /* Function enumeration failed. */ }
