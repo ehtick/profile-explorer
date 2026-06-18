@@ -1,5 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Profiling.Symbols;
+
 namespace ProfileExplorer.Profiling.Tests.Helpers;
 
 /// <summary>
@@ -57,6 +60,23 @@ public static class TestDataHelper {
     catch {
       return false;
     }
+  }
+
+  /// <summary>
+  /// Returns functions whose RVA appears exactly once in the symbol list (i.e. not affected by
+  /// ICF/COMDAT folding, where several names share the same RVA). Folded functions have no stable
+  /// RVA-&gt;name mapping, so tests that need a deterministic round-trip should select from these.
+  /// </summary>
+  public static List<FunctionDebugInfo> GetUniqueRvaFunctions(PdbSymbolProvider provider) {
+    var functions = provider.GetSortedFunctions();
+    var rvaCounts = new Dictionary<long, int>(functions.Count);
+
+    foreach (var func in functions) {
+      rvaCounts.TryGetValue(func.RVA, out int count);
+      rvaCounts[func.RVA] = count + 1;
+    }
+
+    return functions.Where(f => f.Size > 0 && rvaCounts[f.RVA] == 1).ToList();
   }
 
   // MsoTrace constants.

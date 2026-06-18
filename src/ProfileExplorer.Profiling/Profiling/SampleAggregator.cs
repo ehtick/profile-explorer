@@ -8,7 +8,10 @@ namespace ProfileExplorer.Profiling.Profiling;
 
 /// <summary>
 /// Aggregates CPU samples into per-function profiles keyed by neutral function identity.
-/// Thread-safe — processes samples in parallel chunks.
+/// The per-function <see cref="FunctionProfileData"/> entries live in a <see cref="ConcurrentDictionary{TKey,TValue}"/>
+/// and each is mutated under its own lock, so multiple <see cref="AddSamples"/> calls may run
+/// concurrently from different threads. A single <see cref="AddSamples"/> call processes its batch
+/// sequentially.
 /// </summary>
 internal class SampleAggregator {
   private readonly IpResolver ipResolver_;
@@ -26,14 +29,22 @@ internal class SampleAggregator {
   public void AddSamples(IEnumerable<IProfileSample> samples) {
     TimeSpan batchWeight = TimeSpan.Zero;
 
+    // Reused across samples to track which functions already received inclusive weight for the
+    // current stack, so recursive functions (appearing multiple times on one stack) are only
+    // credited inclusive time once per sample.
+    var creditedThisStack = new HashSet<ProfileFunctionId>();
+
     foreach (var sample in samples) {
       if (string.IsNullOrEmpty(sample.ImageName)) continue;
 
       var resolved = ipResolver_.Resolve(sample.InstructionPointer);
       if (resolved == null) continue;
 
+      creditedThisStack.Clear();
+
       // Leaf frame: self (exclusive) + inclusive + per-instruction weight.
-      var leaf = GetOrAddFunction(resolved);
+      var leaf = GetOrAddFunction(resolved, out var leafId);
+      creditedThisStack.Add(leafId);
 
       lock (leaf) {
         leaf.ExclusiveWeight += sample.Weight;
@@ -50,7 +61,10 @@ internal class SampleAggregator {
           var callerResolved = ipResolver_.Resolve(sample.StackFrames[i]);
           if (callerResolved == null) continue;
 
-          var caller = GetOrAddFunction(callerResolved);
+          var caller = GetOrAddFunction(callerResolved, out var callerId);
+
+          // Skip recursive re-entry of a function already credited inclusive time on this stack.
+          if (!creditedThisStack.Add(callerId)) continue;
 
           lock (caller) {
             caller.Weight += sample.Weight;
@@ -73,9 +87,9 @@ internal class SampleAggregator {
 
   public TimeSpan TotalWeight => totalWeight_;
 
-  private FunctionProfileData GetOrAddFunction(ResolvedIp resolved) {
+  private FunctionProfileData GetOrAddFunction(ResolvedIp resolved, out ProfileFunctionId id) {
     string funcName = resolved.FunctionName ?? $"<unknown+0x{resolved.Rva:X}>";
-    var id = new ProfileFunctionId(resolved.ModuleName, funcName);
+    id = new ProfileFunctionId(resolved.ModuleName, funcName);
     return functions_.GetOrAdd(id, _ => new FunctionProfileData(resolved.DebugInfo));
   }
 }

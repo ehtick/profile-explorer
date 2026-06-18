@@ -119,18 +119,29 @@ public class DisassemblerTests {
 
     using (provider) {
       // Find a function small enough to be short but big enough to contain code.
-      var functions = provider.GetSortedFunctions();
-      var shortFunc = functions.FirstOrDefault(f => f.Size is > 4 and <= 32);
+      // Use unique-RVA functions and try several candidates: some short symbols are import
+      // thunks / folded entries that don't disassemble into instructions.
+      var shortFuncs = TestDataHelper.GetUniqueRvaFunctions(provider)
+        .Where(f => f.Size is > 4 and <= 32)
+        .Take(20).ToList();
 
-      if (shortFunc == null) { Assert.Inconclusive("No short function found."); return; }
+      if (shortFuncs.Count == 0) { Assert.Inconclusive("No short function found."); return; }
 
       using var disassembler = Disassembler.CreateForBinary(DllPath, provider, null);
       Assert.IsNotNull(disassembler);
-      var instructions = disassembler.DisassembleToList(shortFunc.RVA, (int)shortFunc.Size);
 
-      // Short functions should produce at least 1 instruction.
-      Assert.IsTrue(instructions.Count > 0,
-        $"Short function {shortFunc.Name} (Size={shortFunc.Size}) should produce instructions.");
+      bool produced = false;
+
+      foreach (var shortFunc in shortFuncs) {
+        var instructions = disassembler.DisassembleToList(shortFunc.RVA, (int)shortFunc.Size);
+        if (instructions.Count > 0) {
+          produced = true;
+          break;
+        }
+      }
+
+      // At least one short function should produce instructions.
+      Assert.IsTrue(produced, "At least one short function should disassemble into instructions.");
     }
   }
 

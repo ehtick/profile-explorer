@@ -19,9 +19,10 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
   private readonly TimeSpan timeout_;
   private readonly TimeSpan degradedTimeout_;
   private bool isDegraded_;
-  private readonly HashSet<string> negativeCache_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly Dictionary<string, DateTime> negativeCache_ = new(StringComparer.OrdinalIgnoreCase);
   private readonly object negativeCacheLock_ = new();
   private readonly bool enableNegativeCache_;
+  private readonly TimeSpan negativeCacheTtl_;
   private string? effectiveLocalCachePath_;
   private readonly string? injectedBearerToken_;
 
@@ -29,6 +30,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     timeout_ = TimeSpan.FromSeconds(options.SymbolTimeoutSeconds);
     degradedTimeout_ = TimeSpan.FromSeconds(options.DegradedTimeoutSeconds);
     enableNegativeCache_ = options.EnableNegativeCache;
+    negativeCacheTtl_ = TimeSpan.FromSeconds(Math.Max(0, options.NegativeCacheTtlSeconds));
     injectedBearerToken_ = options.SymwebBearerToken;
 
     httpClient_ = new HttpClient {
@@ -102,10 +104,8 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     string key = $"{fileName}/{hash}";
 
     // Check negative cache.
-    if (enableNegativeCache_) {
-      lock (negativeCacheLock_) {
-        if (negativeCache_.Contains(key)) return null;
-      }
+    if (enableNegativeCache_ && IsInNegativeCache(key)) {
+      return null;
     }
 
     // Check local cache first.
@@ -116,7 +116,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     foreach (var server in servers_) {
       if (!server.IsRemote) {
         // Local path server — check if file exists directly.
-        string localPath = Path.Combine(server.Url, fileName, hash, fileName);
+        string localPath = Path.Combine(server.Url, SafeName(fileName), hash, SafeName(fileName));
         if (File.Exists(localPath)) return localPath;
         continue;
       }
@@ -144,12 +144,14 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
         // Save to local cache.
         string targetDir = GetCachePath(fileName, hash);
         Directory.CreateDirectory(targetDir);
-        string targetPath = Path.Combine(targetDir, fileName);
+        string targetPath = Path.Combine(targetDir, SafeName(fileName));
 
         await using var sourceStream = await response.Content.ReadAsStreamAsync(cts.Token);
         await using var fileStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
         await sourceStream.CopyToAsync(fileStream, cts.Token);
 
+        // A successful response means the server is responsive again.
+        isDegraded_ = false;
         return targetPath;
       }
       catch (TaskCanceledException) {
@@ -164,30 +166,49 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     // All servers failed — add to negative cache.
     if (enableNegativeCache_) {
       lock (negativeCacheLock_) {
-        negativeCache_.Add(key);
+        negativeCache_[key] = DateTime.UtcNow + negativeCacheTtl_;
       }
     }
 
     return null;
   }
 
+  private bool IsInNegativeCache(string key) {
+    lock (negativeCacheLock_) {
+      if (!negativeCache_.TryGetValue(key, out var expiry)) {
+        return false;
+      }
+
+      if (DateTime.UtcNow >= expiry) {
+        negativeCache_.Remove(key); // Entry expired — allow a retry.
+        return false;
+      }
+
+      return true;
+    }
+  }
+
   private string? FindInLocalCache(string fileName, string hash) {
     string? cachePath = effectiveLocalCachePath_ ?? localCachePath_;
     if (cachePath == null) return null;
-    string path = Path.Combine(cachePath, fileName, hash, fileName);
+    string path = Path.Combine(cachePath, SafeName(fileName), hash, SafeName(fileName));
     return File.Exists(path) ? path : null;
   }
 
   private string GetCachePath(string fileName, string hash) {
     string basePath = effectiveLocalCachePath_ ?? localCachePath_ ?? Path.Combine(Path.GetTempPath(), "ProfileExplorer.Profiling", "symbols");
-    return Path.Combine(basePath, fileName, hash);
+    return Path.Combine(basePath, SafeName(fileName), hash);
   }
 
-  private static Azure.Core.AccessToken? cachedToken_;
-  private static bool authFailed_;
-  private static readonly SemaphoreSlim authLock_ = new(1, 1);
+  // Strip any directory components from a server-/trace-supplied name before using it to build
+  // a local filesystem path, preventing path traversal outside the symbol cache directory.
+  private static string SafeName(string fileName) => Path.GetFileName(fileName);
 
-  private static async Task ApplyAuthAsync(HttpRequestMessage request, SymbolServerInfo server) {
+  private static Azure.Core.AccessToken? cachedToken_;
+  private static readonly SemaphoreSlim authLock_ = new(1, 1);
+  private bool authFailed_;
+
+  private async Task ApplyAuthAsync(HttpRequestMessage request, SymbolServerInfo server) {
     if (!server.RequiresAuth) return;
     if (authFailed_) return; // Don't retry auth after permanent failure.
 

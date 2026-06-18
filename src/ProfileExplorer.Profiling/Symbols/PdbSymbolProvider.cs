@@ -356,19 +356,24 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
         if (retrieved == 0) break;
 
         // Class::function matches; check the full unmangled name to pick the right overload.
-        candidateSymbol ??= symbol;
         try {
           symbol.get_undecoratedNameEx(UndnameNoAccessSpecifiers, out string symbolDemangledName);
           if (symbolDemangledName == demangledName) {
-            if (!ReferenceEquals(symbol, candidateSymbol)) {
-              // keep candidate alive until we return; nothing to release here.
+            // Exact match — release any earlier first-match candidate before returning.
+            if (candidateSymbol != null && !ReferenceEquals(symbol, candidateSymbol)) {
+              Marshal.ReleaseComObject(candidateSymbol);
             }
+
             return symbol;
           }
         }
         catch { /* ignore and keep first candidate */ }
 
-        if (!ReferenceEquals(symbol, candidateSymbol)) {
+        // Keep the first symbol as a fallback candidate; release any others.
+        if (candidateSymbol == null) {
+          candidateSymbol = symbol;
+        }
+        else if (!ReferenceEquals(symbol, candidateSymbol)) {
           Marshal.ReleaseComObject(symbol);
         }
       }

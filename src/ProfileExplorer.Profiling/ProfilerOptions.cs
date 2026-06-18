@@ -31,6 +31,9 @@ public class ProfilerOptions {
   /// <summary>Skip download attempts for previously-failed files within the negative cache TTL.</summary>
   public bool EnableNegativeCache { get; set; } = true;
 
+  /// <summary>How long a failed-download entry stays in the negative cache, in seconds.</summary>
+  public int NegativeCacheTtlSeconds { get; set; } = 300;
+
   /// <summary>Minimum self-time percent threshold for GetFunctionProfiles results.</summary>
   public double MinSelfPercent { get; set; } = 0.0;
 
@@ -60,7 +63,8 @@ public class ProfilerOptions {
   public string? SymwebBearerToken { get; set; }
 
   /// <summary>
-  /// Validate options and throw if invalid.
+  /// Validate options, throwing for invalid values. Percent thresholds are additionally clamped
+  /// into the [0, 100] range as a convenience (they are normalized in place).
   /// </summary>
   public void Validate() {
     if (SymbolPaths is not { Count: > 0 }) {
@@ -73,6 +77,18 @@ public class ProfilerOptions {
 
     if (BellwetherTimeoutSeconds < 0) {
       throw new ArgumentOutOfRangeException(nameof(BellwetherTimeoutSeconds), "Timeout must be non-negative.");
+    }
+
+    if (DegradedTimeoutSeconds < 0) {
+      throw new ArgumentOutOfRangeException(nameof(DegradedTimeoutSeconds), "Timeout must be non-negative.");
+    }
+
+    if (NegativeCacheTtlSeconds < 0) {
+      throw new ArgumentOutOfRangeException(nameof(NegativeCacheTtlSeconds), "TTL must be non-negative.");
+    }
+
+    if (MaxHotLines < 0) {
+      throw new ArgumentOutOfRangeException(nameof(MaxHotLines), "Max hot lines must be non-negative.");
     }
 
     MinSelfPercent = Math.Clamp(MinSelfPercent, 0, 100);

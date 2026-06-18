@@ -169,9 +169,15 @@ public class FunctionProfilerEndToEndTests {
 
     long moduleBase = 0x180000000;
 
-    // Create samples for two different functions.
-    var func1 = functions[0];
-    var func2 = functions.First(f => f.RVA != func1.RVA);
+    // Pick two functions whose RVA is unique (not ICF-folded) and round-trips through the
+    // resolver, so each sample is attributed deterministically to the expected name.
+    var usable = TestDataHelper.GetUniqueRvaFunctions(provider)
+      .Where(f => provider.FindFunctionByRVA(f.RVA)?.RVA == f.RVA)
+      .Take(2).ToList();
+    if (usable.Count < 2) { Assert.Inconclusive("Need at least 2 unique-RVA functions."); return; }
+
+    var func1 = usable[0];
+    var func2 = usable[1];
 
     var ipResolver = new Profiling.IpResolver();
     ipResolver.AddImage(TestDataHelper.MsoModuleName, moduleBase, 0x1000000);
