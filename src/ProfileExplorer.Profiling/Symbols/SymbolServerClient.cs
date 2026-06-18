@@ -25,6 +25,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
   private readonly TimeSpan negativeCacheTtl_;
   private string? effectiveLocalCachePath_;
   private readonly string? injectedBearerToken_;
+  private readonly Action<string>? log_;
 
   public SymbolServerClient(ProfilerOptions options) {
     timeout_ = TimeSpan.FromSeconds(options.SymbolTimeoutSeconds);
@@ -32,6 +33,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     enableNegativeCache_ = options.EnableNegativeCache;
     negativeCacheTtl_ = TimeSpan.FromSeconds(Math.Max(0, options.NegativeCacheTtlSeconds));
     injectedBearerToken_ = options.SymwebBearerToken;
+    log_ = options.LogCallback;
 
     httpClient_ = new HttpClient {
       Timeout = timeout_
@@ -137,7 +139,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
         }
 
         if (!response.IsSuccessStatusCode) {
-          Console.Error.WriteLine($"  Symbol download {response.StatusCode}: {url}");
+          log_?.Invoke($"Symbol download {response.StatusCode}: {url}");
           continue;
         }
 
@@ -257,7 +259,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileResolver {
     }
     catch (Exception ex) {
       authFailed_ = true;
-      Console.Error.WriteLine($"  Symweb auth failed (will not retry): {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
+      log_?.Invoke($"Symweb auth failed (will not retry): {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
     }
   }
 

@@ -140,11 +140,11 @@ public class FunctionProfiler : IDisposable {
             ipResolver_.SetFunctions(moduleName, sortedFunctions);
           }
           else {
-            Console.Error.WriteLine($"  PDB loaded but 0 functions: {moduleName} ({pdbPath})");
+            Log($"PDB loaded but 0 functions: {moduleName} ({pdbPath})");
           }
         }
         else {
-          Console.Error.WriteLine($"  PDB load FAILED: {moduleName} - {PdbSymbolProvider.DiaRegistrationError}");
+          Log($"PDB load FAILED: {moduleName} - {PdbSymbolProvider.DiaRegistrationError}");
           provider.Dispose();
         }
       }
@@ -227,14 +227,14 @@ public class FunctionProfiler : IDisposable {
     if (binaryPath == null) {
       // Binary not available — try to return hot lines from instruction weights
       // without disassembly. Avoids DIA COM calls (AccessViolationException risk).
-      Console.Error.WriteLine($"  Binary not found for {moduleName}, falling back to instruction weights ({function.InstructionWeight.Count} offsets, {function.ExclusiveWeight.TotalMilliseconds:F1}ms)");
+      Log($"Binary not found for {moduleName}, falling back to instruction weights ({function.InstructionWeight.Count} offsets, {function.ExclusiveWeight.TotalMilliseconds:F1}ms)");
       try {
         var result = GetHotLinesWithoutBinary(function, functionRva);
-        Console.Error.WriteLine($"  GetHotLinesWithoutBinary: {(result != null ? $"{result.HotLines.Count} hot lines" : "null")}");
+        Log($"GetHotLinesWithoutBinary: {(result != null ? $"{result.HotLines.Count} hot lines" : "null")}");
         return result;
       }
       catch (Exception ex) {
-        Console.Error.WriteLine($"  GetHotLinesWithoutBinary failed for {functionId}: {ex.GetType().Name}: {ex.Message}");
+        Log($"GetHotLinesWithoutBinary failed for {functionId}: {ex.GetType().Name}: {ex.Message}");
         return null;
       }
     }
@@ -277,6 +277,9 @@ public class FunctionProfiler : IDisposable {
 
     debugInfoByModule_.Clear();
   }
+
+  // Forward a diagnostic message to the consumer-provided sink (no-op when none is configured).
+  private void Log(string message) => options_.LogCallback?.Invoke(message);
 
   /// <summary>
   /// Generate hot lines from instruction weights only, without requiring

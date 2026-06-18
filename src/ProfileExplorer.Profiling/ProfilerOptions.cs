@@ -63,6 +63,13 @@ public class ProfilerOptions {
   public string? SymwebBearerToken { get; set; }
 
   /// <summary>
+  /// Optional sink for diagnostic messages (symbol-load failures, fallbacks, etc.).
+  /// When <c>null</c> (the default) the library emits no output; consumers can route messages to
+  /// an <c>ILogger</c>, the console, or a trace listener. Invoked on arbitrary threads.
+  /// </summary>
+  public Action<string>? LogCallback { get; set; }
+
+  /// <summary>
   /// Validate options, throwing for invalid values. Percent thresholds are additionally clamped
   /// into the [0, 100] range as a convenience (they are normalized in place).
   /// </summary>
