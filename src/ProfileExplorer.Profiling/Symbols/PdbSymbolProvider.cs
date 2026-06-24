@@ -127,9 +127,15 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
 
     if (sortedFuncList_ == null && Interlocked.Increment(ref funcCacheMisses_) >= FunctionCacheMissThreshold) {
       EnsureFunctionListLoaded();
-      if (sortedFuncList_ != null) return FunctionDebugInfo.BinarySearch(sortedFuncList_, rva, sortedFuncListOverlapping_);
+
+      if (sortedFuncList_ != null) {
+        var result = FunctionDebugInfo.BinarySearch(sortedFuncList_, rva, sortedFuncListOverlapping_);
+        if (result != null) return result;
+      }
     }
 
+    // List search missed (or list not yet loaded): fall back to a direct DIA query, which also
+    // resolves addresses inside PGO-split function chunks that the contiguous list doesn't cover.
     return FindFunctionByRVADirect(rva);
   }
 
