@@ -33,7 +33,7 @@ public class MethodCode {
   public byte[] Code { get; set; }
   public List<AddressNamePair> CallTargets { get; set; }
 
-  public string FindCallTarget(long address) {
+  public string? FindCallTarget(long address) {
     int index = CallTargets.FindIndex(item => item.Address == address);
 
     if (index != -1) {

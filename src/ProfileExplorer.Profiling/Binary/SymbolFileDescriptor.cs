@@ -27,7 +27,11 @@ public class SymbolFileDescriptor : IEquatable<SymbolFileDescriptor> {
   public string SymbolName => string.IsNullOrEmpty(FileName) ? "" : Path.GetFileName(FileName);
 
   public bool Equals(SymbolFileDescriptor other) {
-    return FileName.Equals(other.FileName, StringComparison.OrdinalIgnoreCase) &&
+    if (ReferenceEquals(null, other)) {
+      return false;
+    }
+
+    return string.Equals(FileName, other.FileName, StringComparison.OrdinalIgnoreCase) &&
            Id == other.Id &&
            Age == other.Age;
   }
@@ -61,6 +65,6 @@ public class SymbolFileDescriptor : IEquatable<SymbolFileDescriptor> {
   }
 
   public override int GetHashCode() {
-    return HashCode.Combine(FileName.GetHashCode(StringComparison.OrdinalIgnoreCase), Id, Age);
+    return HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(FileName ?? string.Empty), Id, Age);
   }
 }
