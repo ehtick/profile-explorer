@@ -56,4 +56,32 @@
     <BuildOutputTargetFolder>lib</BuildOutputTargetFolder>
   </PropertyGroup>
 
+  <!--
+    Generate the DIA COM interop (Dia2Lib) at build time from the committed src\external\msdia140.dll
+    via TlbImp.exe, instead of committing the generated binary. The <Reference Include="Dia2Lib"> above
+    resolves the assembly this target produces. TlbImp ships with the .NET Framework SDK tools (installed
+    by Visual Studio / the Windows SDK), so a Windows build host with those tools is required.
+    Output (external\Dia2Lib.dll) is gitignored and regenerated whenever msdia140.dll changes.
+    Note: this runs only via TlbImp (an Exec), NOT the ResolveComReference task, so it works under
+    `dotnet build` (unlike <COMReference>/<COMFileReference>, which require full-framework MSBuild).
+  -->
+  <Target Name="GenerateDiaInterop"
+          BeforeTargets="ResolveAssemblyReferences;BeforeCompile;CoreCompile"
+          Inputs="$(MSBuildProjectDirectory)\..\external\msdia140.dll"
+          Outputs="$(MSBuildProjectDirectory)\external\Dia2Lib.dll">
+    <ItemGroup>
+      <_TlbImpCandidate Include="C:\Program Files (x86)\Microsoft SDKs\Windows\*\bin\**\TlbImp.exe" />
+      <_TlbImpCandidate Include="C:\Program Files (x86)\Windows Kits\10\bin\**\TlbImp.exe" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_TlbImpExe>@(_TlbImpCandidate)</_TlbImpExe>
+      <_TlbImpExe>$(_TlbImpExe.Split(';')[0])</_TlbImpExe>
+    </PropertyGroup>
+    <Error Condition="'$(_TlbImpExe)' == '' or !Exists('$(_TlbImpExe)')"
+           Text="TlbImp.exe not found - cannot generate the DIA interop (Dia2Lib.dll). Install the .NET Framework SDK tools (via Visual Studio or the Windows SDK) on the build host." />
+    <Message Importance="high" Text="Generating DIA interop from msdia140.dll using &quot;$(_TlbImpExe)&quot;" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)\external" />
+    <Exec Command="&quot;$(_TlbImpExe)&quot; &quot;$(MSBuildProjectDirectory)\..\external\msdia140.dll&quot; /out:&quot;$(MSBuildProjectDirectory)\external\Dia2Lib.dll&quot; /namespace:Dia2Lib /silent" />
+  </Target>
+
 </Project>
