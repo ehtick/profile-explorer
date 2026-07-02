@@ -13,6 +13,11 @@ namespace ProfileExplorer.Profiling.Symbols;
 /// Implements the standard symbol server protocol: GET /{name}/{hash}/{name}
 /// </summary>
 public class SymbolServerClient : IDisposable, ISymbolFileLocator {
+  // Well-known Microsoft (corp) Azure AD tenant used for Symweb authentication.
+  private const string MicrosoftTenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+  // Azure AD resource scope for the Symweb symbol server.
+  private const string SymwebResourceScope = "https://microsoft.com/.default";
+
   private readonly HttpClient httpClient_;
   private readonly List<SymbolServerInfo> servers_ = [];
   private readonly string? localCachePath_;
@@ -240,16 +245,16 @@ public class SymbolServerClient : IDisposable, ISymbolFileLocator {
         // Symweb uses Azure AD with resource https://microsoft.com.
         // Try non-interactive creds first, then browser as last resort.
         var credential = new ChainedTokenCredential(
-          new SharedTokenCacheCredential(new SharedTokenCacheCredentialOptions { TenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47" }),
+          new SharedTokenCacheCredential(new SharedTokenCacheCredentialOptions { TenantId = MicrosoftTenantId }),
           new VisualStudioCredential(),
           new AzureCliCredential(),
           new AzurePowerShellCredential(),
           new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions {
-            TenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47",
+            TenantId = MicrosoftTenantId,
             TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = "ProfileExplorer.Profiling" }
           }));
 
-        var tokenContext = new Azure.Core.TokenRequestContext(["https://microsoft.com/.default"]);
+        var tokenContext = new Azure.Core.TokenRequestContext([SymwebResourceScope]);
         cachedToken_ = await credential.GetTokenAsync(tokenContext);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cachedToken_.Value.Token);
       }
