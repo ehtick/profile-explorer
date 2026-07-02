@@ -14,7 +14,7 @@ namespace ProfileExplorer.Profiling.Symbols;
 /// authentication, caching, and filtering behavior is preserved.
 /// </para>
 /// </summary>
-public interface ISymbolFileResolver {
+public interface ISymbolFileLocator {
   /// <summary>
   /// Locate a PDB file for the given debug identity, returning a local file path or
   /// <c>null</c> if it cannot be found.

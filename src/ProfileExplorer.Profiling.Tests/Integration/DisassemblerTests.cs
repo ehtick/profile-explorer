@@ -15,7 +15,8 @@ public class DisassemblerTests {
 
   private static bool CanRun() {
     return TestDataHelper.HasTestData(TestDataHelper.MsoTrace) &&
-           File.Exists(DllPath);
+           File.Exists(DllPath) &&
+           File.Exists(PdbPath);
   }
 
   private static (FunctionDebugInfo? func, PdbSymbolProvider? provider) FindTestFunction() {

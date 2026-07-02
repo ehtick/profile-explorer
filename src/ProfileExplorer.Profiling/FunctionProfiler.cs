@@ -18,7 +18,7 @@ namespace ProfileExplorer.Profiling;
 /// </summary>
 public class FunctionProfiler : IDisposable {
   private readonly ProfilerOptions options_;
-  private readonly ISymbolFileResolver symbolResolver_;
+  private readonly ISymbolFileLocator symbolResolver_;
   private readonly bool ownsSymbolResolver_;
   private readonly IpResolver ipResolver_;
   private readonly SampleAggregator sampleAggregator_;
@@ -43,7 +43,7 @@ public class FunctionProfiler : IDisposable {
   /// is <c>null</c>, the library's vendored <see cref="SymbolServerClient"/> is used (and owned/disposed
   /// by this instance). When a resolver is supplied, the caller retains ownership of its lifetime.
   /// </summary>
-  public FunctionProfiler(ProfilerOptions options, ISymbolFileResolver? symbolResolver) {
+  public FunctionProfiler(ProfilerOptions options, ISymbolFileLocator? symbolResolver) {
     options.Validate();
     options_ = options;
 
@@ -73,7 +73,7 @@ public class FunctionProfiler : IDisposable {
       ipResolver_.AddImage(key, image.BaseAddress, image.Size);
     }
 
-    cachedReport_ = null;
+    InvalidateReport();
   }
 
   /// <summary>
@@ -83,7 +83,7 @@ public class FunctionProfiler : IDisposable {
     var sampleList = samples as IReadOnlyList<IProfileSample> ?? samples.ToList();
     sampleAggregator_.AddSamples(sampleList);
     callTreeBuilder_.AddSamples(sampleList);
-    cachedReport_ = null;
+    InvalidateReport();
   }
 
   /// <summary>
@@ -92,6 +92,7 @@ public class FunctionProfiler : IDisposable {
   /// </summary>
   public void AddPerformanceCounterEvents(IEnumerable<IPerformanceCounterEvent> events) {
     counterAggregator_?.AddEvents(events);
+    InvalidateReport();
   }
 
   /// <summary>
@@ -104,6 +105,8 @@ public class FunctionProfiler : IDisposable {
     foreach (var method in methods) {
       managedResolver_.AddMethod(method);
     }
+
+    InvalidateReport();
   }
 
   /// <summary>
@@ -154,6 +157,14 @@ public class FunctionProfiler : IDisposable {
     }
 
     symbolsLoaded_ = true;
+    InvalidateReport();
+  }
+
+  /// <summary>
+  /// Invalidate the memoized report so the next <see cref="GetReport"/> call rebuilds it.
+  /// Called whenever new data (images, samples, counters, managed methods, symbols) is added.
+  /// </summary>
+  private void InvalidateReport() {
     cachedReport_ = null;
   }
 
