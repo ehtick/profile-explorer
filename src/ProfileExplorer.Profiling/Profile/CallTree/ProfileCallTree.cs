@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Collections;
 using ProfileExplorer.Core.Profile.Data;
 
 namespace ProfileExplorer.Core.Profile.CallTree;
@@ -23,7 +24,7 @@ public sealed class ProfileCallTree {
     InitializeReferenceMembers();
   }
 
-  public List<ProfileCallTreeNode> RootNodes => new(rootNodes_.Values);
+  public List<ProfileCallTreeNode> RootNodes => rootNodes_.ToValueList();
 
   public TimeSpan TotalRootNodesWeight {
     get {

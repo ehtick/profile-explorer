@@ -104,13 +104,8 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   public List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>
     SortedByWeightPerThreadWeights {
     get {
-      var list = new List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>(ThreadWeights.Count);
-
-      foreach (var pair in ThreadWeights) {
-        list.Add((pair.Key, pair.Value));
-      }
-
-      list.Sort((a, b) => b.Values.Weight.CompareTo(a.Values.Weight));
+      var list = ThreadWeights.ToList();
+      list.Sort((a, b) => b.Item2.Weight.CompareTo(a.Item2.Weight));
       return list;
     }
   }
@@ -118,13 +113,8 @@ public class ProfileCallTreeNode : IEquatable<ProfileCallTreeNode> {
   public List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>
     SortedByIdPerThreadWeights {
     get {
-      var list = new List<(int ThreadId, (TimeSpan Weight, TimeSpan ExclusiveWeight) Values)>(ThreadWeights.Count);
-
-      foreach (var pair in ThreadWeights) {
-        list.Add((pair.Key, pair.Value));
-      }
-
-      list.Sort((a, b) => a.ThreadId.CompareTo(b.ThreadId));
+      var list = ThreadWeights.ToList();
+      list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
       return list;
     }
   }
