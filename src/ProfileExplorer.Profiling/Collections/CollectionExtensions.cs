@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 using System.Collections.Generic;
 
-namespace ProfileExplorer.Core.Collections;
+namespace ProfileExplorer.Profiling.Collections;
 
 // Small dictionary projection helpers ported into the library so call sites can
 // materialize entries/keys/values without depending on ProfileExplorerCore utilities.

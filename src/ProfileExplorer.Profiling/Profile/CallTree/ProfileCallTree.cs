@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using ProfileExplorer.Core.Binary;
-using ProfileExplorer.Core.Collections;
+using ProfileExplorer.Profiling.Collections;
 using ProfileExplorer.Core.Profile.Data;
 
 namespace ProfileExplorer.Core.Profile.CallTree;

@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Core.Collections;
+using ProfileExplorer.Profiling.Collections;
 
 namespace ProfileExplorer.Core.Profile.CallTree;
 
