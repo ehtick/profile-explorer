@@ -94,7 +94,7 @@ public class CallTreeListItem : SearchableProfileItem, ITreeModel {
   public List<CallTreeListItem> Children { get; set; }
   public long Time { get; set; }
   public CallTreeListItemKind Kind { get; set; }
-  public bool HasCallTreeNode => CallTreeNode?.Function != null;
+  public bool HasCallTreeNode => CallTreeNode is {HasFunction: true};
   public override TimeSpan Weight => HasCallTreeNode ? CallTreeNode.Weight : TimeSpan.Zero;
   public override TimeSpan ExclusiveWeight => HasCallTreeNode ? CallTreeNode.ExclusiveWeight : TimeSpan.Zero;
   public override string ModuleName =>
@@ -600,7 +600,7 @@ public partial class CallTreePanel : ToolPanelControl, IFunctionProfileInfoProvi
   private ProfileCallTreeNode GetChildCallTreeNode(ProfileCallTreeNode childNode, ProfileCallTreeNode parentNode,
                                                    ProfileCallTree callTree) {
     if (settings_.CombineInstances) {
-      return callTree.GetCombinedCallTreeNode(childNode.Function, parentNode);
+      return callTree.GetCombinedCallTreeNode(childNode.FunctionId, parentNode);
     }
 
     return childNode;
@@ -622,7 +622,7 @@ public partial class CallTreePanel : ToolPanelControl, IFunctionProfileInfoProvi
     foreach (var instance in nodeList) {
       bool isSelf = nodeList.Count == 1;
       string name = isSelf ? "Function" : $"Function instance {index++}";
-      string funcName = Session.CompilerInfo.NameProvider.FormatFunctionName(instance.Function);
+      string funcName = Session.CompilerInfo.NameProvider.FormatFunctionName(instance.FunctionName);
 
       if (isSelf && !string.IsNullOrEmpty(funcName)) {
         name = funcName;
@@ -784,7 +784,7 @@ public partial class CallTreePanel : ToolPanelControl, IFunctionProfileInfoProvi
     double exclusiveWeightPercentage = ComputeNodePercentage(node.ExclusiveWeight, percentageFunc);
 
     var result = new CallTreeListItem(kind, this, Session.CompilerInfo.NameProvider.FormatFunctionName) {
-      Function = node.Function,
+      Function = node.ResolveFunction(Session),
       ModuleName = node.ModuleName,
       Time = node.Weight.Ticks,
       CallTreeNode = node,
@@ -805,7 +805,7 @@ public partial class CallTreePanel : ToolPanelControl, IFunctionProfileInfoProvi
     double weightPercentage = ComputeNodePercentage(weight, percentageFunc);
     double exclusiveWeightPercentage = ComputeNodePercentage(exclusiveWeight, percentageFunc);
     return new CallTreeListItem(CallTreeListItemKind.Header, this) {
-      CallTreeNode = new ProfileCallTreeNode(null, null) {Weight = weight, ExclusiveWeight = exclusiveWeight},
+      CallTreeNode = new ProfileCallTreeNode(null, default) {Weight = weight, ExclusiveWeight = exclusiveWeight},
       Time = TimeSpan.MaxValue.Ticks - priority,
       FunctionName = name,
       Percentage = weightPercentage,

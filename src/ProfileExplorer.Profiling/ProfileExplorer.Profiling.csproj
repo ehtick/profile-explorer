@@ -1,0 +1,87 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Library is Windows-only at runtime (DIA/Capstone/COM); TFM is net8.0 so net8.0 consumers
+         (e.g. ProfileExplorerCore) can reference it. Suppress the platform-compat analyzer. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <RootNamespace>ProfileExplorer.Profiling</RootNamespace>
+    <AssemblyName>ProfileExplorer.Profiling</AssemblyName>
+    <Description>Function-level CPU profiling, disassembly, and performance counter attribution from ETW traces.</Description>
+    <PackageId>ProfileExplorer.Profiling</PackageId>
+    <Authors>Microsoft</Authors>
+    <Company>Microsoft</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ProfileExplorer.Profiling.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" Version="1.11.4" />
+    <PackageReference Include="protobuf-net" Version="3.2.45" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Dia2Lib">
+      <HintPath>external\Dia2Lib.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Native dependencies: capstone.dll and msdia140.dll -->
+  <!-- These are copied to output for local builds AND packed into the NuGet package -->
+  <ItemGroup>
+    <None Include="..\external\capstone\build\Release\capstone.dll" Condition="Exists('..\external\capstone\build\Release\capstone.dll')" Pack="true" PackagePath="runtimes\win-x64\native">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>capstone.dll</Link>
+    </None>
+    <None Include="..\external\msdia140.dll" Condition="Exists('..\external\msdia140.dll')" Pack="true" PackagePath="runtimes\win-x64\native">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>msdia140.dll</Link>
+    </None>
+  </ItemGroup>
+
+  <!-- Ensure native DLLs from runtimes/ folder are copied to output by consumers -->
+  <ItemGroup>
+    <None Include="external\Dia2Lib.dll" Pack="true" PackagePath="lib\net8.0\Dia2Lib.dll" />
+    <None Include="build\net8.0\ProfileExplorer.Profiling.targets" Pack="true" PackagePath="build\net8.0" />
+  </ItemGroup>
+
+  <!-- MSBuild targets file to copy native deps for package consumers -->
+  <PropertyGroup>
+    <BuildOutputTargetFolder>lib</BuildOutputTargetFolder>
+  </PropertyGroup>
+
+  <!--
+    Generate the DIA COM interop (Dia2Lib) at build time from the committed src\external\msdia140.dll
+    via TlbImp.exe, instead of committing the generated binary. The <Reference Include="Dia2Lib"> above
+    resolves the assembly this target produces. TlbImp ships with the .NET Framework SDK tools (installed
+    by Visual Studio / the Windows SDK), so a Windows build host with those tools is required.
+    Output (external\Dia2Lib.dll) is gitignored and regenerated whenever msdia140.dll changes.
+    Note: this runs only via TlbImp (an Exec), NOT the ResolveComReference task, so it works under
+    `dotnet build` (unlike <COMReference>/<COMFileReference>, which require full-framework MSBuild).
+  -->
+  <Target Name="GenerateDiaInterop"
+          BeforeTargets="ResolveAssemblyReferences;BeforeCompile;CoreCompile"
+          Inputs="$(MSBuildProjectDirectory)\..\external\msdia140.dll"
+          Outputs="$(MSBuildProjectDirectory)\external\Dia2Lib.dll">
+    <ItemGroup>
+      <_TlbImpCandidate Include="C:\Program Files (x86)\Microsoft SDKs\Windows\*\bin\**\TlbImp.exe" />
+      <_TlbImpCandidate Include="C:\Program Files (x86)\Windows Kits\10\bin\**\TlbImp.exe" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_TlbImpExe>@(_TlbImpCandidate)</_TlbImpExe>
+      <_TlbImpExe>$(_TlbImpExe.Split(';')[0])</_TlbImpExe>
+    </PropertyGroup>
+    <Error Condition="'$(_TlbImpExe)' == '' or !Exists('$(_TlbImpExe)')"
+           Text="TlbImp.exe not found - cannot generate the DIA interop (Dia2Lib.dll). Install the .NET Framework SDK tools (via Visual Studio or the Windows SDK) on the build host." />
+    <Message Importance="high" Text="Generating DIA interop from msdia140.dll using &quot;$(_TlbImpExe)&quot;" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)\external" />
+    <Exec Command="&quot;$(_TlbImpExe)&quot; &quot;$(MSBuildProjectDirectory)\..\external\msdia140.dll&quot; /out:&quot;$(MSBuildProjectDirectory)\external\Dia2Lib.dll&quot; /namespace:Dia2Lib /silent" />
+  </Target>
+
+</Project>

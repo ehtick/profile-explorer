@@ -13,6 +13,7 @@ using System.Windows.Media;
 using ProfileExplorer.UI.Controls;
 using ProfileExplorer.UI.Document;
 using ProfileExplorer.Core.Profile.CallTree;
+using ProfileExplorer.Core.Utilities;
 using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Core.Profile.Processing;
 using ProfileExplorer.Core.Providers;
@@ -164,7 +165,7 @@ public partial class ProfileListView : UserControl, INotifyPropertyChanged {
   public RelayCommand<object> PreviewFunctionCommand => new(async obj => {
     if (ItemList.SelectedItem is ProfileListViewItem item && item.CallTreeNode != null) {
       var brush = GetMarkedNodeColor(item);
-      await IRDocumentPopupInstance.ShowPreviewPopup(item.CallTreeNode.Function, "",
+      await IRDocumentPopupInstance.ShowPreviewPopup(item.CallTreeNode.ResolveFunction(session_), "",
                                                      ItemList, session_, null, false, brush);
     }
   });
@@ -178,7 +179,7 @@ public partial class ProfileListView : UserControl, INotifyPropertyChanged {
   public RelayCommand<object> PreviewFunctionInstanceCommand => new(async obj => {
     if (ItemList.SelectedItem is ProfileListViewItem item && item.CallTreeNode != null) {
       var filter = new ProfileSampleFilter(item.CallTreeNode);
-      await IRDocumentPopupInstance.ShowPreviewPopup(item.CallTreeNode.Function, "",
+      await IRDocumentPopupInstance.ShowPreviewPopup(item.CallTreeNode.ResolveFunction(session_), "",
                                                      ItemList, session_, filter);
     }
   });
@@ -206,14 +207,14 @@ public partial class ProfileListView : UserControl, INotifyPropertyChanged {
   });
   public RelayCommand<object> CopyFunctionNameCommand => new(async obj => {
     if (ItemList.SelectedItem is ProfileListViewItem item) {
-      string text = Session.CompilerInfo.NameProvider.GetFunctionName(item.CallTreeNode.Function);
+      string text = item.CallTreeNode.FunctionName;
       Clipboard.SetText(text);
     }
   });
   public RelayCommand<object> CopyDemangledFunctionNameCommand => new(async obj => {
     if (ItemList.SelectedItem is ProfileListViewItem item) {
       var options = FunctionNameDemanglingOptions.Default;
-      string text = Session.CompilerInfo.NameProvider.DemangleFunctionName(item.CallTreeNode.Function, options);
+      string text = Session.CompilerInfo.NameProvider.DemangleFunctionName(item.CallTreeNode.FunctionName, options);
       Clipboard.SetText(text);
     }
   });
@@ -420,7 +421,7 @@ public partial class ProfileListView : UserControl, INotifyPropertyChanged {
       var item = (ProfileListViewItem)hoveredItem.DataContext;
 
       if (item.CallTreeNode != null) {
-        return PreviewPopupArgs.ForFunction(item.CallTreeNode.Function, ItemList);
+        return PreviewPopupArgs.ForFunction(item.CallTreeNode.ResolveFunction(session_), ItemList);
       }
 
       return null;

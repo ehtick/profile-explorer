@@ -13,7 +13,7 @@ public class ManagedRawProfileData {
   public Dictionary<long /* moduleId */, DotNetDebugInfoProvider> moduleDebugInfoMap_;
   public Dictionary<long /* moduleId */, ProfileImage> moduleImageMap_;
   public Dictionary<ManagedMethodId, ManagedMethodMapping> managedMethodIdMap_;
-  public Dictionary<ManagedMethodId, DotNetDebugInfoProvider.MethodCode> managedMethodCodeMap_;
+  public Dictionary<ManagedMethodId, MethodCode> managedMethodCodeMap_;
   public Dictionary<string, ManagedMethodMapping> managedMethodsMap_;
   public List<ManagedMethodMapping> managedMethods_;
   public List<(long ModuleId, ManagedMethodMapping Mapping)> patchedMappings_;
@@ -24,7 +24,7 @@ public class ManagedRawProfileData {
     moduleImageMap_ = new Dictionary<long, ProfileImage>();
     managedMethods_ = new List<ManagedMethodMapping>();
     managedMethodsMap_ = new Dictionary<string, ManagedMethodMapping>();
-    managedMethodCodeMap_ = new Dictionary<ManagedMethodId, DotNetDebugInfoProvider.MethodCode>();
+    managedMethodCodeMap_ = new Dictionary<ManagedMethodId, MethodCode>();
     managedMethodIdMap_ = new Dictionary<ManagedMethodId, ManagedMethodMapping>();
     patchedMappings_ = new List<(long ModuleId, ManagedMethodMapping Mapping)>();
   }

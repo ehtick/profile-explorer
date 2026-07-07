@@ -14,6 +14,7 @@ using System.Windows.Threading;
 using ProfileExplorer.Core;
 using ProfileExplorer.UI.Controls;
 using ProfileExplorer.Core.Profile.CallTree;
+using ProfileExplorer.Core.Utilities;
 using ProfileExplorer.Core.Profile.Processing;
 using ProfileExplorer.Core.Profile.Data;
 
@@ -86,7 +87,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
       }
 
       if (node.HasFunction) {
-        text += Session.CompilerInfo.NameProvider.GetFunctionName(node.Function);
+        text += node.FunctionName;
       }
     }
 
@@ -101,7 +102,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
       }
 
       if (node.HasFunction) {
-        text += Session.CompilerInfo.NameProvider.FormatFunctionName(node.Function);
+        text += Session.CompilerInfo.NameProvider.FormatFunctionName(node.FunctionName);
       }
     }
 
@@ -125,7 +126,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
   });
   public RelayCommand<object> MarkAllInstancesCommand => new(async obj => {
     MarkSelectedNodes(
-      obj, (node, color) => MarkFunctionInstances(node.Function, GraphViewer.MarkedColoredNodeStyle(color)));
+      obj, (node, color) => MarkFunctionInstances(node.CallTreeNode.ResolveFunction(Session), GraphViewer.MarkedColoredNodeStyle(color)));
   });
   public RelayCommand<object> MarkModuleCommand => new(async obj => {
     var markingSettings = App.Settings.MarkingSettings;
@@ -151,7 +152,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
   public RelayCommand<object> PreviewFunctionCommand => new(async obj => {
     if (GraphViewer.SelectedNode is {HasFunction: true}) {
       var brush = GetMarkedNodeColor(GraphViewer.SelectedNode);
-      await IRDocumentPopupInstance.ShowPreviewPopup(GraphViewer.SelectedNode.Function, "",
+      await IRDocumentPopupInstance.ShowPreviewPopup(GraphViewer.SelectedNode.CallTreeNode.ResolveFunction(Session), "",
                                                      GraphViewer, Session, null, false, brush);
     }
   });
@@ -159,7 +160,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
     if (GraphViewer.SelectedNode is {HasFunction: true}) {
       var filter = new ProfileSampleFilter(GraphViewer.SelectedNode.CallTreeNode);
       var brush = GetMarkedNodeColor(GraphViewer.SelectedNode);
-      await IRDocumentPopupInstance.ShowPreviewPopup(GraphViewer.SelectedNode.Function, "",
+      await IRDocumentPopupInstance.ShowPreviewPopup(GraphViewer.SelectedNode.CallTreeNode.ResolveFunction(Session), "",
                                                      GraphViewer, Session, filter, false, brush);
     }
   });
@@ -675,7 +676,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
   }
 
   private async Task OpenFunction(ProfileCallTreeNode node) {
-    if (node is {HasFunction: true} && node.Function.HasSections) {
+    if (node is {HasFunction: true} && node.ResolveFunction(Session)?.HasSections == true) {
       var openMode = Utils.IsControlModifierActive() ? OpenSectionKind.NewTab : OpenSectionKind.ReplaceCurrent;
       await Session.OpenProfileFunction(node, openMode);
     }
@@ -1196,7 +1197,7 @@ public partial class FlameGraphHost : UserControl, IFunctionProfileInfoProvider,
   private void MarkAllInstancesExecuted(object sender, ExecutedRoutedEventArgs e) {
     if (GraphViewer.SelectedNode != null &&
         GraphViewer.SelectedNode.HasFunction) {
-      MarkFunctionInstances(GraphViewer.SelectedNode.Function,
+      MarkFunctionInstances(GraphViewer.SelectedNode.CallTreeNode.ResolveFunction(Session),
                             GraphViewer.MarkedNodeStyle);
     }
   }

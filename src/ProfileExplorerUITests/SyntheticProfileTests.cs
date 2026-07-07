@@ -54,7 +54,7 @@ public class SyntheticProfileTests {
         resolved.AddFrame(f, ip, info.RVA, frameIndex: frameIndex, frameKey, stack, pointerSize: 8);
       }
       var sample = new ProfileSample(ip: 0, time: TimeSpan.Zero, weight: weight, isKernelCode: false, contextId: 0) { StackId = 0 };
-      CallTree.UpdateCallTree(ref sample, resolved);
+      CallTree.UpdateCallTree(sample.Weight, resolved);
     }
   }
 
@@ -250,6 +250,6 @@ public class SyntheticProfileTests {
       resolved.AddFrame(f, ip, info.RVA, frameIndex, frameKey, stack, 8);
     }
     var sample = new ProfileSample(0, TimeSpan.Zero, weight, false, 0) { StackId = 0 };
-    tree.UpdateCallTree(ref sample, resolved);
+    tree.UpdateCallTree(sample.Weight, resolved);
   }
 }

@@ -60,7 +60,7 @@ public class ProfileCallSite : IEquatable<ProfileCallSite> {
 
     // Don't use FindIndex because it allocates a lambda on each invocation.
     for (int i = 0; i < Targets.Count; i++) {
-      if (Targets[i].Node.Equals(node.Function)) {
+      if (Targets[i].Node.FunctionId == node.FunctionId) {
         index = i;
         break;
       }

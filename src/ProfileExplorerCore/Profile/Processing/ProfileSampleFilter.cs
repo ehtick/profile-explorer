@@ -93,7 +93,7 @@ public class ProfileSampleFilter : IEquatable<ProfileSampleFilter> {
       foreach (var instance in FunctionInstances) {
         // Try to add the instance node that is a child
         // of the current instance in the profile filter.
-        var targetInstance = instance.FindChildNode(targetFunc);
+        var targetInstance = instance.FindChildNode(targetFunc.ToProfileId());
 
         if (targetInstance != null) {
           targetFilter.AddInstance(targetInstance);

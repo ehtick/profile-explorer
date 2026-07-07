@@ -346,6 +346,14 @@ public static class ExtensionMethods {
     return FormatName(node.FunctionName, session.CompilerInfo.NameProvider.FormatFunctionName, maxLength);
   }
 
+  /// <summary>
+  /// Resolves the neutral call-tree node identity back to its IRTextFunction for document navigation,
+  /// using the session's profile resolver. Returns null if no IRTextFunction is associated.
+  /// </summary>
+  public static IRTextFunction ResolveFunction(this ProfileCallTreeNode node, ISession session) {
+    return node != null ? session?.ProfileData?.ResolveFunction(node.FunctionId) : null;
+  }
+
   private static string FormatName(string name, FunctionNameFormatter nameFormatter, int maxLength) {
     if (string.IsNullOrEmpty(name)) {
       return name;

@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.ETW;
 
 namespace ProfileExplorer.Core.Profile.Data;
@@ -77,7 +78,7 @@ public class ResolvedProfileStackFrame32 : ResolvedProfileStackFrame {
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public sealed class ResolvedProfileStack {
+public sealed class ResolvedProfileStack : IResolvedCallStack {
   // Used to deduplicate stack frames for the same function running in the same context.
   public static ConcurrentDictionary<ResolvedProfileStackFrameKey, ResolvedProfileStackFrameDetails> uniqueFrames_ =
     new();
@@ -104,6 +105,16 @@ public sealed class ResolvedProfileStack {
   public List<ResolvedProfileStackFrame> StackFrames { get; set; }
   public ProfileContext Context { get; set; }
   public int FrameCount => StackFrames.Count;
+
+  // IResolvedCallStack: neutral view consumed by ProfileCallTree.UpdateCallTree.
+  int IResolvedCallStack.ThreadId => Context.ThreadId;
+
+  ResolvedCallStackFrame IResolvedCallStack.GetFrame(int index) {
+    var frame = StackFrames[index];
+    var details = frame.FrameDetails;
+    return new ResolvedCallStackFrame(frame.FrameRVA, details.DebugInfo, details.FunctionId,
+                                      details.IsKernelCode, details.IsManagedCode);
+  }
 
   public void AddFrame(IRTextFunction function, long frameIP, long frameRVA, int frameIndex,
                        ResolvedProfileStackFrameKey frameDetails, ProfileStack stack, int pointerSize) {
@@ -140,6 +151,7 @@ public sealed class ResolvedProfileStackFrameDetails : IEquatable<ResolvedProfil
                                           ProfileImage image, bool isManagedCode) {
     DebugInfo = debugInfo;
     Function = function;
+    FunctionId = function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
     Image = image;
     IsManagedCode = isManagedCode;
   }
@@ -147,6 +159,9 @@ public sealed class ResolvedProfileStackFrameDetails : IEquatable<ResolvedProfil
   private ResolvedProfileStackFrameDetails() { }
   public FunctionDebugInfo DebugInfo { get; set; }
   public IRTextFunction Function { get; set; }
+  // Neutral (module, name) identity precomputed from Function so the call-tree build
+  // path can remain free of IRTextFunction.
+  public ProfileFunctionId FunctionId { get; set; }
   public ProfileImage Image { get; set; }
   public bool IsKernelCode { get; set; }
   public bool IsManagedCode { get; set; }

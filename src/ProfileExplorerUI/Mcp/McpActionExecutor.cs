@@ -897,7 +897,7 @@ public class McpActionExecutor : IMcpActionExecutor
                 foreach (var kvp in profileData.FunctionProfiles)
                 {
                     var func = kvp.Key;
-                    string funcName = func.Name;
+                    string funcName = func.FunctionName;
                     string moduleName = func.ModuleName;
 
                     // Match by function name
@@ -916,7 +916,8 @@ public class McpActionExecutor : IMcpActionExecutor
                         ProfileExplorer.Core.Utilities.DiagnosticLogger.LogInfo($"[MCP] Found function in profile: {funcName} (module: {moduleName})");
                         // Create a temporary IRTextFunctionEx wrapper for the found function
                         // We need to get the actual extension from the SectionPanel if possible
-                        var funcExtension = sectionPanel.MainPanel.GetFunctionExtension(func);
+                        var irFunc = profileData.ResolveFunction(func);
+                        var funcExtension = irFunc != null ? sectionPanel.MainPanel.GetFunctionExtension(irFunc) : null;
                         if (funcExtension != null)
                         {
                             return funcExtension;

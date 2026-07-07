@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
 using ProfileExplorer.Core;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Core.Providers;
@@ -47,7 +48,6 @@ public class FlameGraphNode : SearchableProfileItem, IEquatable<FlameGraphNode> 
   public bool IsHidden { get; set; }
   public bool HasFunction => CallTreeNode != null;
   public bool HasChildren => Children is {Count: > 0};
-  public IRTextFunction Function => CallTreeNode?.Function;
   public TimeSpan StartTime { get; set; }
   public TimeSpan EndTime { get; set; }
   public TimeSpan Duration => EndTime - StartTime;
@@ -323,7 +323,7 @@ public sealed class FlameGraph {
         for (int i = node.Children.Count - 1; i >= 0; i--) {
           var child = node.Children[i];
 
-          if (!child.CallTreeNode.Function.Equals(resolvedFrame.FrameDetails.Function)) {
+          if (child.CallTreeNode.FunctionId != resolvedFrame.FrameDetails.Function.ToProfileId()) {
             break; // Last func is different, stop and start a new stack.
           }
 
@@ -337,7 +337,7 @@ public sealed class FlameGraph {
 
       if (targetNode == null) {
         var callNode = new ProfileCallTreeNode(resolvedFrame.FrameDetails.DebugInfo,
-                                               resolvedFrame.FrameDetails.Function,
+                                               resolvedFrame.FrameDetails.Function.ToProfileId(),
                                                null, node.CallTreeNode);
         targetNode = new FlameGraphNode(callNode, TimeSpan.Zero, depth, nameFormatter_);
         node.Children ??= new List<FlameGraphNode>();

@@ -12,7 +12,7 @@ namespace ProfileExplorer.Core.Profile.Processing;
 
 public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
   private ProfileSampleFilter filter_;
-  private List<List<IRTextFunction>> filterStackFuncts_;
+  private List<List<ProfileFunctionId>> filterStackFuncts_;
   private List<ChunkData> chunks_;
 
   private FunctionProfileProcessor(ProfileSampleFilter filter) {
@@ -22,7 +22,7 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
     if (filter_ != null && filter_.FunctionInstances is {Count: > 0}) {
       // Compute once the list of functions on the path
       // from call tree root to the function instance node.
-      filterStackFuncts_ = new List<List<IRTextFunction>>();
+      filterStackFuncts_ = new List<List<ProfileFunctionId>>();
 
       foreach (var instance in filter_.FunctionInstances) {
         if (instance is ProfileCallTreeGroupNode groupNode) {
@@ -40,10 +40,10 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
   public ProfileData Profile { get; } = new();
 
   private void AddInstanceFilter(ProfileCallTreeNode node) {
-    var stackFuncts = new List<IRTextFunction>();
+    var stackFuncts = new List<ProfileFunctionId>();
 
     while (node != null) {
-      stackFuncts.Add(node.Function);
+      stackFuncts.Add(node.FunctionId);
       node = node.Caller;
     }
 
@@ -90,7 +90,7 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
 
         for (int i = 0; i < stackFuncts.Count; i++) {
           if (stackFuncts[i] !=
-              stack.StackFrames[stack.FrameCount - i - 1].FrameDetails.Function) {
+              stack.StackFrames[stack.FrameCount - i - 1].FrameDetails.Function.ToProfileId()) {
             isMatch = false;
             break;
           }
@@ -129,17 +129,19 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
       long funcRva = frameDetails.DebugInfo.RVA;
       long frameRva = resolvedFrame.FrameRVA;
       var textFunction = frameDetails.Function;
+      var funcId = new ProfileFunctionId(textFunction?.ModuleName, textFunction?.Name);
       ref var funcProfile =
-        ref CollectionsMarshal.GetValueRefOrAddDefault(data.FunctionProfiles, frameDetails.Function, out bool exists);
+        ref CollectionsMarshal.GetValueRefOrAddDefault(data.FunctionProfiles, funcId, out bool exists);
 
       if (!exists) {
         funcProfile = new FunctionProfileData(frameDetails.DebugInfo);
+        data.FunctionResolver[funcId] = textFunction;
       }
 
       long offset = frameRva - funcRva;
 
       // Don't count the inclusive time for recursive functions multiple times.
-      if (data.StackFunctions.Add(textFunction)) {
+      if (data.StackFunctions.Add(funcId)) {
         funcProfile.AddInstructionSample(offset, sample.Weight);
         funcProfile.Weight += sample.Weight;
 
@@ -209,6 +211,7 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
 
       lock (Profile) {
         Profile.FunctionProfiles = chunks_[0].FunctionProfiles;
+        Profile.FunctionResolver = chunks_[0].FunctionResolver;
       }
     }
   }
@@ -227,13 +230,18 @@ public sealed class FunctionProfileProcessor : ProfileSampleProcessor {
         existingValue = pair.Value;
       }
     }
+
+    foreach (var pair in sourceChunk.FunctionResolver) {
+      destChunk.FunctionResolver[pair.Key] = pair.Value;
+    }
   }
 
   private class ChunkData {
     public HashSet<int> StackModules = new();
-    public HashSet<IRTextFunction> StackFunctions = new();
+    public HashSet<ProfileFunctionId> StackFunctions = new();
     public Dictionary<int, TimeSpan> ModuleWeights = new();
-    public Dictionary<IRTextFunction, FunctionProfileData> FunctionProfiles = new();
+    public Dictionary<ProfileFunctionId, FunctionProfileData> FunctionProfiles = new();
+    public Dictionary<ProfileFunctionId, IRTextFunction> FunctionResolver = new();
     public TimeSpan TotalWeight = TimeSpan.Zero;
     public TimeSpan ProfileWeight = TimeSpan.Zero;
   }

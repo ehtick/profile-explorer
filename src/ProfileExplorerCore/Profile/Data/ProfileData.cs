@@ -19,7 +19,8 @@ public class ProfileData {
 
   public ProfileData() {
     ProfileWeight = TimeSpan.Zero;
-    FunctionProfiles = new Dictionary<IRTextFunction, FunctionProfileData>();
+    FunctionProfiles = new Dictionary<ProfileFunctionId, FunctionProfileData>();
+    FunctionResolver = new Dictionary<ProfileFunctionId, IRTextFunction>();
     ModuleWeights = new Dictionary<int, TimeSpan>();
     PerformanceCounters = new Dictionary<int, PerformanceCounter>();
     ModuleCounters = new Dictionary<string, PerformanceCounterValueSet>();
@@ -33,7 +34,10 @@ public class ProfileData {
 
   public TimeSpan ProfileWeight { get; set; }
   public TimeSpan TotalWeight { get; set; }
-  public Dictionary<IRTextFunction, FunctionProfileData> FunctionProfiles { get; set; }
+  public Dictionary<ProfileFunctionId, FunctionProfileData> FunctionProfiles { get; set; }
+  // Maps the neutral function identity back to its IRTextFunction (for UI/document navigation).
+  // Populated at the single add-path (GetOrCreateFunctionProfile).
+  public Dictionary<ProfileFunctionId, IRTextFunction> FunctionResolver { get; set; }
   public Dictionary<int, TimeSpan> ModuleWeights { get; set; }
   public Dictionary<string, PerformanceCounterValueSet> ModuleCounters { get; set; }
   public Dictionary<int, PerformanceCounter> PerformanceCounters { get; set; }
@@ -138,7 +142,11 @@ public class ProfileData {
   }
 
   public FunctionProfileData GetFunctionProfile(IRTextFunction function) {
-    return FunctionProfiles.TryGetValue(function, out var profile) ? profile : null;
+    return GetFunctionProfile(Id(function));
+  }
+
+  public FunctionProfileData GetFunctionProfile(ProfileFunctionId functionId) {
+    return FunctionProfiles.TryGetValue(functionId, out var profile) ? profile : null;
   }
 
   public bool HasFunctionProfile(IRTextFunction function) {
@@ -147,20 +155,49 @@ public class ProfileData {
 
   public FunctionProfileData GetOrCreateFunctionProfile(IRTextFunction function,
                                                         FunctionDebugInfo debugInfo) {
+    var id = Id(function);
     ref var funcProfile =
-      ref CollectionsMarshal.GetValueRefOrAddDefault(FunctionProfiles, function, out bool exists);
+      ref CollectionsMarshal.GetValueRefOrAddDefault(FunctionProfiles, id, out bool exists);
 
     if (!exists) {
       funcProfile = new FunctionProfileData(debugInfo);
+      FunctionResolver[id] = function; // Remember the IRTextFunction for navigation/resolution.
     }
 
     return funcProfile;
   }
 
+  public IRTextFunction ResolveFunction(ProfileFunctionId functionId) {
+    return FunctionResolver.GetValueOrNull(functionId);
+  }
+
+  /// <summary>
+  /// Registers the neutral identity -> IRTextFunction mapping used for UI/document navigation.
+  /// Call single-threaded (FunctionResolver is a plain dictionary). Idempotent.
+  /// </summary>
+  public void RegisterFunction(IRTextFunction function) {
+    if (function != null) {
+      FunctionResolver[Id(function)] = function;
+    }
+  }
+
   public List<(IRTextFunction, FunctionProfileData)> GetSortedFunctions() {
-    var list = FunctionProfiles.ToList();
+    var list = new List<(IRTextFunction, FunctionProfileData)>(FunctionProfiles.Count);
+
+    foreach (var pair in FunctionProfiles) {
+      var func = ResolveFunction(pair.Key);
+
+      if (func != null) {
+        list.Add((func, pair.Value));
+      }
+    }
+
     list.Sort((a, b) => -a.Item2.ExclusiveWeight.CompareTo(b.Item2.ExclusiveWeight));
     return list;
+  }
+
+  private static ProfileFunctionId Id(IRTextFunction function) {
+    return function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
   }
 
   public void AddThreads(IEnumerable<ProfileThread> threads) {
@@ -211,6 +248,7 @@ public class ProfileData {
     //? while the rest is more like a processing result similar to FuncProfileData
     var currentProfile = new ProcessingResult {
       FunctionProfiles = FunctionProfiles,
+      FunctionResolver = FunctionResolver,
       CallTree = CallTree,
       ModuleWeights = ModuleWeights,
       ProfileWeight = ProfileWeight,
@@ -220,7 +258,8 @@ public class ProfileData {
 
     CallTree?.ResetTags();
     ModuleWeights = new Dictionary<int, TimeSpan>();
-    FunctionProfiles = new Dictionary<IRTextFunction, FunctionProfileData>();
+    FunctionProfiles = new Dictionary<ProfileFunctionId, FunctionProfileData>();
+    FunctionResolver = new Dictionary<ProfileFunctionId, IRTextFunction>();
     ProfileWeight = TimeSpan.Zero;
     TotalWeight = TimeSpan.Zero;
 
@@ -229,6 +268,7 @@ public class ProfileData {
     ProfileWeight = profile.ProfileWeight;
     TotalWeight = profile.TotalWeight;
     FunctionProfiles = profile.FunctionProfiles;
+    FunctionResolver = profile.FunctionResolver;
     CallTree = profile.CallTree;
     Filter = filter;
     return currentProfile;
@@ -237,6 +277,7 @@ public class ProfileData {
   public ProcessingResult RestorePreviousProfile(ProcessingResult previousProfile) {
     var currentProfile = new ProcessingResult {
       FunctionProfiles = FunctionProfiles,
+      FunctionResolver = FunctionResolver,
       CallTree = CallTree,
       ModuleWeights = ModuleWeights,
       ProfileWeight = ProfileWeight,
@@ -248,6 +289,7 @@ public class ProfileData {
     ProfileWeight = previousProfile.ProfileWeight;
     TotalWeight = previousProfile.TotalWeight;
     FunctionProfiles = previousProfile.FunctionProfiles;
+    FunctionResolver = previousProfile.FunctionResolver;
     CallTree = previousProfile.CallTree;
     Filter = previousProfile.Filter;
     return currentProfile;
@@ -334,7 +376,8 @@ public class ProfileData {
 
   public class ProcessingResult {
     public ProfileSampleFilter Filter { get; set; }
-    public Dictionary<IRTextFunction, FunctionProfileData> FunctionProfiles { get; set; }
+    public Dictionary<ProfileFunctionId, FunctionProfileData> FunctionProfiles { get; set; }
+    public Dictionary<ProfileFunctionId, IRTextFunction> FunctionResolver { get; set; }
     public ProfileCallTree CallTree { get; set; }
     public Dictionary<int, TimeSpan> ModuleWeights { get; set; }
     public TimeSpan ProfileWeight { get; set; }

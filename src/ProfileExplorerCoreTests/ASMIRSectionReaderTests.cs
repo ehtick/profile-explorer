@@ -13,12 +13,13 @@ namespace ProfileExplorer.CoreTests;
 public class ASMIRSectionReaderTests {
   [TestMethod]
   public void GenerateSummary_CreatesOneTextInfoPerSection() {
+    // Build the input with explicit CRLF so the test is independent of this source file's
+    // line endings (a verbatim literal would otherwise capture LF or CRLF based on checkout).
     string data =
-      @"x264_plane_copy_c:
-  str lr,[sp]
-x264_frame_init_lowres:
-  sub sp,sp,#0x40
-";
+      "x264_plane_copy_c:\r\n" +
+      "  str lr,[sp]\r\n" +
+      "x264_frame_init_lowres:\r\n" +
+      "  sub sp,sp,#0x40\r\n";
     byte[] bytes = Encoding.UTF8.GetBytes(data);
     var (_, capturedText, _1) = GenerateSummaryFor(bytes);
     Assert.AreEqual(2, capturedText.Count);
@@ -31,11 +32,10 @@ x264_frame_init_lowres:
   [TestMethod]
   public void GenerateSummary_GivesNPlus1ProgressUpdates() {
     string data =
-      @"x264_plane_copy_c:
-  str lr,[sp]
-x264_frame_init_lowres:
-  sub sp,sp,#0x40
-";
+      "x264_plane_copy_c:\r\n" +
+      "  str lr,[sp]\r\n" +
+      "x264_frame_init_lowres:\r\n" +
+      "  sub sp,sp,#0x40\r\n";
     byte[] bytes = Encoding.UTF8.GetBytes(data);
     var (_, _1, capturedProgressInfo) = GenerateSummaryFor(bytes);
     // 1 progress for each section + 1 "done"
@@ -51,11 +51,10 @@ x264_frame_init_lowres:
   [TestMethod]
   public void GenerateSummary_CreatesCorrectIROutputForFunctions() {
     string data =
-      @"x264_plane_copy_c:
-  str lr,[sp]
-x264_frame_init_lowres:
-  sub sp,sp,#0x40
-";
+      "x264_plane_copy_c:\r\n" +
+      "  str lr,[sp]\r\n" +
+      "x264_frame_init_lowres:\r\n" +
+      "  sub sp,sp,#0x40\r\n";
     byte[] bytes = Encoding.UTF8.GetBytes(data);
     var (summary, _, _1) = GenerateSummaryFor(bytes);
     Assert.AreEqual(2, summary.Functions.Count);

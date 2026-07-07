@@ -183,7 +183,7 @@ public partial class MainWindow : Window, IUISession {
       return false;
     }
 
-    return await OpenProfileFunction(node.Function, openMode, instanceFilter, targetDocument);
+    return await OpenProfileFunction(node.ResolveFunction(this), openMode, instanceFilter, targetDocument);
   }
 
   public async Task<bool> OpenProfileFunction(IRTextFunction function, OpenSectionKind openMode,
@@ -204,7 +204,7 @@ public partial class MainWindow : Window, IUISession {
       return false;
     }
 
-    await SwitchActiveFunction(node.Function);
+    await SwitchActiveFunction(node.ResolveFunction(this));
     return true;
   }
 
@@ -213,7 +213,7 @@ public partial class MainWindow : Window, IUISession {
       return false;
     }
 
-    return await OpenProfileSourceFile(node.Function, profileFilter);
+    return await OpenProfileSourceFile(node.ResolveFunction(this), profileFilter);
   }
 
   public async Task<bool> OpenProfileSourceFile(IRTextFunction function, ProfileSampleFilter profileFilter = null) {
@@ -357,12 +357,12 @@ public partial class MainWindow : Window, IUISession {
     }
 
     if (sourcePanelKind != ToolPanelKind.Section) {
-      await SwitchActiveFunction(node.Function, false);
+      await SwitchActiveFunction(node.ResolveFunction(this), false);
     }
 
     if (sourcePanelKind != ToolPanelKind.FlameGraph) {
       if (FindPanel(ToolPanelKind.FlameGraph) is FlameGraphPanel flameGraphPanel) {
-        await flameGraphPanel.SelectFunction(node.Function, false);
+        await flameGraphPanel.SelectFunction(node.ResolveFunction(this), false);
       }
     }
 
@@ -374,7 +374,7 @@ public partial class MainWindow : Window, IUISession {
     if (sourcePanelKind != ToolPanelKind.CallerCallee) {
       if (FindPanel(ToolPanelKind.CallerCallee) is CallTreePanel callerCalleePanel) {
         //? TODO: Make it path-sensitive (show exact instance, not combined?)
-        await callerCalleePanel?.DisplayProfileCallerCalleeTree(node.Function);
+        await callerCalleePanel?.DisplayProfileCallerCalleeTree(node.ResolveFunction(this));
       }
     }
 
@@ -631,7 +631,7 @@ public partial class MainWindow : Window, IUISession {
         bool addNode = true;
 
         while (parentNode != null) {
-          if (!funcs.Contains(parentNode.Function)) {
+          if (!funcs.Contains(parentNode.ResolveFunction(this))) {
             addNode = false;
             break;
           }

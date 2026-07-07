@@ -1,0 +1,70 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+using System;
+using System.IO;
+using ProtoBuf;
+
+namespace ProfileExplorer.Core.Binary;
+
+[ProtoContract(SkipConstructor = true)]
+public class SymbolFileDescriptor : IEquatable<SymbolFileDescriptor> {
+  public SymbolFileDescriptor(string fileName, Guid id, int age) {
+    FileName = fileName != null ? string.Intern(fileName) : null;
+    Id = id;
+    Age = age;
+  }
+
+  public SymbolFileDescriptor(string fileName) {
+    FileName = fileName != null ? string.Intern(fileName) : null;
+  }
+
+  [ProtoMember(1)]
+  public string FileName { get; set; }
+  [ProtoMember(2)]
+  public Guid Id { get; set; }
+  [ProtoMember(3)]
+  public int Age { get; set; }
+  public string SymbolName => string.IsNullOrEmpty(FileName) ? "" : Path.GetFileName(FileName);
+
+  public bool Equals(SymbolFileDescriptor other) {
+    if (ReferenceEquals(null, other)) {
+      return false;
+    }
+
+    return string.Equals(FileName, other.FileName, StringComparison.OrdinalIgnoreCase) &&
+           Id == other.Id &&
+           Age == other.Age;
+  }
+
+  public static bool operator ==(SymbolFileDescriptor left, SymbolFileDescriptor right) {
+    return Equals(left, right);
+  }
+
+  public static bool operator !=(SymbolFileDescriptor left, SymbolFileDescriptor right) {
+    return !Equals(left, right);
+  }
+
+  public override string ToString() {
+    return $"{Id}:{FileName}";
+  }
+
+  public override bool Equals(object obj) {
+    if (ReferenceEquals(null, obj)) {
+      return false;
+    }
+
+    if (ReferenceEquals(this, obj)) {
+      return true;
+    }
+
+    if (obj.GetType() != GetType()) {
+      return false;
+    }
+
+    return Equals((SymbolFileDescriptor)obj);
+  }
+
+  public override int GetHashCode() {
+    return HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(FileName ?? string.Empty), Id, Age);
+  }
+}

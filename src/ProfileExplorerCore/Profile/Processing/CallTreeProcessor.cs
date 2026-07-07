@@ -29,7 +29,7 @@ public sealed class CallTreeProcessor : ProfileSampleProcessor {
   protected override void ProcessSample(ref ProfileSample sample, ResolvedProfileStack stack,
                                         int sampleIndex, object chunkData) {
     var callTree = (ProfileCallTree)chunkData;
-    callTree.UpdateCallTree(ref sample, stack);
+    callTree.UpdateCallTree(sample.Weight, stack);
   }
 
   protected override object InitializeChunk(int k, int samplesPerChunk) {

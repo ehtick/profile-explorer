@@ -4,8 +4,6 @@ using System;
 
 namespace ProfileExplorer.Core.Providers;
 
-public delegate string FunctionNameFormatter(string name);
-
 [Flags]
 public enum FunctionNameDemanglingOptions {
   Default = 0,
