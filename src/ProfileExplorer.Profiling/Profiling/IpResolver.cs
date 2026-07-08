@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Profiling.Symbols;
 
 namespace ProfileExplorer.Profiling.Profiling;
@@ -65,6 +66,47 @@ internal class IpResolver {
 
     // Module found but function not resolved.
     return new ResolvedIp(image.Name, moduleRva, null, ip, new FunctionDebugInfo(null, moduleRva, 0));
+  }
+
+  /// <summary>
+  /// True when <paramref name="instancePath"/> (root-first function identities) is a prefix of the
+  /// sample stack read from the root. <paramref name="framesLeafFirst"/> is leaf-first, so the root
+  /// is the last frame. Used for call-tree instance ("focus on this path") filtering — the neutral
+  /// equivalent of Core FunctionProfileProcessor's stack-prefix instance filter.
+  /// </summary>
+  public bool StackHasInstancePrefix(IReadOnlyList<long>? framesLeafFirst,
+                                     IReadOnlyList<ProfileFunctionId> instancePath) {
+    if (instancePath.Count == 0) return true;
+    if (framesLeafFirst is not { Count: > 0 } || framesLeafFirst.Count < instancePath.Count) return false;
+
+    for (int i = 0; i < instancePath.Count; i++) {
+      long ip = framesLeafFirst[framesLeafFirst.Count - 1 - i];
+      var resolved = Resolve(ip);
+      var id = resolved != null
+        ? new ProfileFunctionId(resolved.ModuleName, resolved.FunctionName ?? $"<unknown+0x{resolved.Rva:X}>")
+        : default;
+      if (!id.Equals(instancePath[i])) return false;
+    }
+
+    return true;
+  }
+
+  /// <summary>
+  /// Instance-prefix check for PRE-RESOLVED frames (leaf-first) whose <see cref="ProfileFunctionId"/>
+  /// is already known — no IP resolution needed. <paramref name="instancePath"/> is root-first.
+  /// </summary>
+  public static bool StackHasInstancePrefixResolved(IReadOnlyList<ResolvedFrame> framesLeafFirst,
+                                                    IReadOnlyList<ProfileFunctionId> instancePath) {
+    if (instancePath.Count == 0) return true;
+    if (framesLeafFirst.Count < instancePath.Count) return false;
+
+    for (int i = 0; i < instancePath.Count; i++) {
+      if (!framesLeafFirst[framesLeafFirst.Count - 1 - i].FunctionId.Equals(instancePath[i])) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   private ImageInfo? FindImage(long ip) {

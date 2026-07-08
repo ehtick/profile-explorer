@@ -24,8 +24,8 @@ namespace ProfileExplorer.CoreTests;
 /// properly attributed rather than silently dropped.
 ///
 /// Integration tests exercise the actual ETWProfileDataProvider code path.
-/// Processor tests verify FunctionProfileProcessor and FunctionsForSamplesProcessor
-/// handle the resulting frames correctly (these processors are not covered by
+/// Processor tests verify the library ComputeProfile path and FunctionsForSamplesProcessor
+/// handle the resulting frames correctly (these are not covered by
 /// the existing SyntheticProfileTests in the UI test project).
 /// </summary>
 [TestClass]
@@ -189,10 +189,10 @@ public class ETWUnmappedFrameResolutionTests {
 
   #endregion
 
-  #region Processor tests — FunctionProfileProcessor / FunctionsForSamplesProcessor
+  #region Processor tests — ComputeProfile (library) / FunctionsForSamplesProcessor
 
   [TestMethod]
-  public void FunctionProfileProcessor_ExclusiveWeightGoesToLeafNotCaller() {
+  public void ComputeProfile_ExclusiveWeightGoesToLeafNotCaller() {
     // Core bug: before the fix, Unknown leaf frames were skipped and
     // ExclusiveWeight was mis-attributed to the deepest known caller.
     var profileData = new ProfileData();
@@ -218,7 +218,7 @@ public class ETWUnmappedFrameResolutionTests {
     }
     profileData.ComputeThreadSampleRanges();
 
-    var result = FunctionProfileProcessor.Compute(profileData, new ProfileSampleFilter());
+    var result = profileData.ComputeProfile(profileData, new ProfileSampleFilter());
 
     Assert.AreEqual(TimeSpan.FromMilliseconds(20),
       result.GetFunctionProfile(unknownFunc).ExclusiveWeight,
@@ -232,7 +232,7 @@ public class ETWUnmappedFrameResolutionTests {
   }
 
   [TestMethod]
-  public void FunctionProfileProcessor_AllUnmappedStack_WeightPreserved() {
+  public void ComputeProfile_AllUnmappedStack_WeightPreserved() {
     var profileData = new ProfileData();
     var unknownImage = CreateUnknownModuleImage();
     profileData.Modules[unknownImage.Id] = unknownImage;
@@ -249,7 +249,7 @@ public class ETWUnmappedFrameResolutionTests {
       resolved));
     profileData.ComputeThreadSampleRanges();
 
-    var result = FunctionProfileProcessor.Compute(profileData, new ProfileSampleFilter());
+    var result = profileData.ComputeProfile(profileData, new ProfileSampleFilter());
 
     Assert.AreEqual(TimeSpan.FromMilliseconds(5), result.ProfileWeight,
       "Profile weight must include unmapped-code-only samples");

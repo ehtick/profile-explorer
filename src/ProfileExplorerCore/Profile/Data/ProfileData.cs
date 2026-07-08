@@ -1,13 +1,16 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile.Adapters;
 using ProfileExplorer.Core.Profile.CallTree;
 using ProfileExplorer.Core.Profile.Processing;
 using ProfileExplorer.Core.Utilities;
+using ProfileExplorer.Profiling;
 
 namespace ProfileExplorer.Core.Profile.Data;
 
@@ -298,32 +301,148 @@ public class ProfileData {
   public ProfileData ComputeProfile(ProfileData baseProfile, ProfileSampleFilter filter,
                                     bool computeCallTree = true,
                                     int maxChunks = int.MaxValue) {
-    // Compute the call tree in parallel with the per-function profiles.
-    var tasks = new List<Task>();
+    // The ProfileExplorer.Profiling library owns aggregation + call-tree building; it runs over the
+    // already-resolved sample stacks (Core owns symbol resolution). Managed/JIT/unknown frames flow
+    // through because Core resolved them before they landed in ResolvedProfileStack.
+    //
+    // Aggregation runs in parallel: the library partitions the sample range across workers,
+    // aggregates per-function profiles into a shared thread-safe map, and builds per-worker call
+    // trees that are merged — matching the parallelism of the former FunctionProfileProcessor /
+    // CallTreeProcessor. Core supplies a thread-safe projection of each resolved stack.
+    using var profiler = FunctionProfiler.CreateForResolvedInput();
 
-    if (maxChunks == int.MaxValue) {
-      // Use half the threads for each task.
-      maxChunks = Math.Max(1, CoreSettingsProvider.GeneralSettings.CurrentCpuCoreLimit / 2);
-    }
+    // Neutral function identity -> IRTextFunction, for UI/document navigation. Populated concurrently
+    // from worker threads during projection, so it must be a concurrent map.
+    var functionResolver = new ConcurrentDictionary<ProfileFunctionId, IRTextFunction>();
+    var instancePaths = BuildInstanceFilterPaths(filter);
+    var samples = baseProfile.Samples;
 
-    var callTreeTask = Task.Run(() => {
-      if (computeCallTree) {
-        return CallTreeProcessor.Compute(baseProfile, filter, maxChunks);
+    int startIndex = filter.TimeRange?.StartSampleIndex ?? 0;
+    int endIndex = filter.TimeRange?.EndSampleIndex ?? samples.Count;
+    int workerCount = maxChunks == int.MaxValue
+      ? Math.Max(1, CoreSettingsProvider.GeneralSettings.CurrentCpuCoreLimit)
+      : Math.Max(1, maxChunks);
+
+    // Thread-safe projection of one resolved stack into the library's neutral ResolvedFrame form,
+    // applying the same thread/instance filtering the sequential path did. Called concurrently.
+    bool Project(int index, List<ResolvedFrame> frames, out TimeSpan weight, out int threadId) {
+      var entry = samples[index];
+      var stack = entry.Stack;
+      weight = entry.Sample.Weight;
+      threadId = stack.Context.ThreadId;
+
+      if (filter.HasThreadFilter && !filter.ThreadIds.Contains(threadId)) {
+        return false;
       }
 
+      if (instancePaths != null && !StackMatchesAnyInstance(stack, instancePaths)) {
+        return false;
+      }
+
+      foreach (var frame in stack.StackFrames) {
+        if (frame.IsUnknown) {
+          continue;
+        }
+
+        var details = frame.FrameDetails;
+        frames.Add(new ResolvedFrame(details.FunctionId, details.DebugInfo, frame.FrameRVA,
+                                     details.IsKernelCode, details.IsManagedCode));
+
+        if (details.Function != null) {
+          functionResolver.TryAdd(details.FunctionId, details.Function);
+        }
+      }
+
+      return frames.Count > 0;
+    }
+
+    profiler.AddResolvedSamplesParallel(startIndex, endIndex, Project, computeCallTree, workerCount);
+
+    var report = profiler.GetReport();
+    var moduleIdByName = BuildModuleIdMap(baseProfile);
+    var result = new ProfileData();
+
+    ProfileReportMapper.ApplyReport(result, report,
+      id => functionResolver.TryGetValue(id, out var func) ? func : null,
+      name => moduleIdByName.GetValueOrDefault(name, 0));
+
+    if (!computeCallTree) {
+      result.CallTree = null;
+    }
+
+    return result;
+  }
+
+  // Builds the per-instance root-first ProfileFunctionId paths used to focus the profile on specific
+  // call-tree instances (mirrors the former FunctionProfileProcessor instance filter).
+  private static List<List<ProfileFunctionId>> BuildInstanceFilterPaths(ProfileSampleFilter filter) {
+    if (filter.FunctionInstances is not { Count: > 0 }) {
       return null;
-    });
+    }
 
-    var funcProfileTask = Task.Run(() => {
-      return FunctionProfileProcessor.Compute(baseProfile, filter, maxChunks);
-    });
+    var paths = new List<List<ProfileFunctionId>>();
 
-    tasks.Add(callTreeTask);
-    Task.WhenAll(tasks.ToArray()).Wait();
+    void AddInstance(ProfileCallTreeNode node) {
+      var path = new List<ProfileFunctionId>();
 
-    var profile = funcProfileTask.Result;
-    profile.CallTree = callTreeTask.Result;
-    return profile;
+      while (node != null) {
+        path.Add(node.FunctionId);
+        node = node.Caller;
+      }
+
+      path.Reverse(); // root-first
+      paths.Add(path);
+    }
+
+    foreach (var instance in filter.FunctionInstances) {
+      if (instance is ProfileCallTreeGroupNode groupNode) {
+        foreach (var node in groupNode.Nodes) {
+          AddInstance(node);
+        }
+      }
+      else {
+        AddInstance(instance);
+      }
+    }
+
+    return paths;
+  }
+
+  // True if the stack (leaf-first) begins from the root with any instance path (root-first).
+  private static bool StackMatchesAnyInstance(ResolvedProfileStack stack,
+                                              List<List<ProfileFunctionId>> instancePaths) {
+    foreach (var path in instancePaths) {
+      if (stack.FrameCount < path.Count) {
+        continue;
+      }
+
+      bool isMatch = true;
+
+      for (int i = 0; i < path.Count; i++) {
+        if (path[i] != stack.StackFrames[stack.FrameCount - i - 1].FrameDetails.FunctionId) {
+          isMatch = false;
+          break;
+        }
+      }
+
+      if (isMatch) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Maps a module name to a representative ProfileImage.Id for ModuleWeights keying.
+  private static Dictionary<string, int> BuildModuleIdMap(ProfileData baseProfile) {
+    var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var pair in baseProfile.Modules) {
+      string name = pair.Value.ModuleName ?? string.Empty;
+      map.TryAdd(name, pair.Key);
+    }
+
+    return map;
   }
 
   //? TODO: Port to ProfileSampleProcessor

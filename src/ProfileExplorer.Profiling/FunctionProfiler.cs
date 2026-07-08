@@ -43,8 +43,29 @@ public class FunctionProfiler : IDisposable {
   /// is <c>null</c>, the library's vendored <see cref="SymbolServerClient"/> is used (and owned/disposed
   /// by this instance). When a resolver is supplied, the caller retains ownership of its lifetime.
   /// </summary>
-  public FunctionProfiler(ProfilerOptions options, ISymbolFileLocator? symbolResolver) {
-    options.Validate();
+  public FunctionProfiler(ProfilerOptions options, ISymbolFileLocator? symbolResolver)
+    : this(options, symbolResolver, validateOptions: true) {
+  }
+
+  /// <summary>
+  /// Create a profiler for PRE-RESOLVED input only (the host owns symbol resolution): no symbol
+  /// paths, download, or option validation are required. Use with <see cref="AddResolvedSample"/> +
+  /// <see cref="GetReport"/>. This is how Profile Explorer's ETW load path drives the library.
+  /// </summary>
+  public static FunctionProfiler CreateForResolvedInput() {
+    var options = new ProfilerOptions {
+      MinSelfPercent = 0,
+      IncludeManagedCode = false,
+      IncludePerformanceCounters = false
+    };
+    return new FunctionProfiler(options, NullSymbolFileLocator.Instance, validateOptions: false);
+  }
+
+  private FunctionProfiler(ProfilerOptions options, ISymbolFileLocator? symbolResolver, bool validateOptions) {
+    if (validateOptions) {
+      options.Validate();
+    }
+
     options_ = options;
 
     if (symbolResolver != null) {
@@ -77,12 +98,135 @@ public class FunctionProfiler : IDisposable {
   }
 
   /// <summary>
-  /// Add CPU samples. Can be called multiple times (e.g., per-processor batches).
+  /// Register pre-resolved, RVA-sorted function debug info for a module, bypassing the profiler's
+  /// own PDB download and reading. Use this when the host has already acquired and read the module's
+  /// symbols (e.g. Profile Explorer, which owns symbol acquisition via TraceEvent): the engine then
+  /// resolves and aggregates against these functions instead of loading its own.
+  /// <para>
+  /// Must be called BEFORE <see cref="AddSamples"/>, because samples are resolved as they are added.
+  /// Providing functions this way makes <see cref="LoadSymbolsAsync"/> a no-op.
+  /// </para>
   /// </summary>
-  public void AddSamples(IEnumerable<IProfileSample> samples) {
+  /// <param name="moduleName">Module/image name, matching <see cref="IProfileImage.ImageName"/>.</param>
+  /// <param name="sortedFunctions">The module's functions, sorted by ascending RVA.</param>
+  public void AddResolvedFunctions(string moduleName, IReadOnlyList<FunctionDebugInfo> sortedFunctions) {
+    if (string.IsNullOrEmpty(moduleName)) {
+      throw new ArgumentException("Module name is required.", nameof(moduleName));
+    }
+
+    ArgumentNullException.ThrowIfNull(sortedFunctions);
+
+    ipResolver_.SetFunctions(moduleName,
+      sortedFunctions as List<FunctionDebugInfo> ?? new List<FunctionDebugInfo>(sortedFunctions));
+    symbolsLoaded_ = true; // Host owns symbol acquisition; suppress the profiler's own download path.
+    InvalidateReport();
+  }
+
+  /// <summary>
+  /// Add CPU samples. Can be called multiple times (e.g., per-processor batches). When
+  /// <paramref name="instancePath"/> (a root-first call-tree instance path) is provided, only samples
+  /// whose stack begins with that path from the root are aggregated (call-tree "focus" filtering).
+  /// </summary>
+  public void AddSamples(IEnumerable<IProfileSample> samples,
+                         IReadOnlyList<ProfileFunctionId>? instancePath = null) {
     var sampleList = samples as IReadOnlyList<IProfileSample> ?? samples.ToList();
-    sampleAggregator_.AddSamples(sampleList);
-    callTreeBuilder_.AddSamples(sampleList);
+    sampleAggregator_.AddSamples(sampleList, instancePath);
+    callTreeBuilder_.AddSamples(sampleList, instancePath);
+    InvalidateReport();
+  }
+
+  /// <summary>
+  /// Aggregate a single PRE-RESOLVED sample (the host owns symbol resolution). Frames are leaf-first
+  /// and already resolved; the host must omit frames it could not resolve. Feeds both the per-function
+  /// profile and the call tree. Call <see cref="GetReport"/> after all samples are added.
+  /// </summary>
+  public void AddResolvedSample(TimeSpan weight, int threadId, IReadOnlyList<ResolvedFrame> framesLeafFirst,
+                                IReadOnlyList<ProfileFunctionId>? instancePath = null) {
+    sampleAggregator_.AddResolvedStack(weight, framesLeafFirst, instancePath);
+    callTreeBuilder_.AddResolvedStack(weight, threadId, framesLeafFirst, instancePath);
+    InvalidateReport();
+  }
+
+  /// <summary>
+  /// Aggregate a range of PRE-RESOLVED samples IN PARALLEL (the host owns symbol resolution). The
+  /// library partitions <c>[startIndex, endIndex)</c> across up to <paramref name="maxWorkers"/>
+  /// worker threads; each worker projects its samples via <paramref name="project"/> (invoked
+  /// concurrently, so it must be thread-safe), aggregates per-function profiles into the shared
+  /// thread-safe map, and builds an isolated per-worker call tree. The per-worker trees are then
+  /// merged into one — reproducing the parallelism of the former Core FunctionProfileProcessor /
+  /// CallTreeProcessor while keeping aggregation in the library.
+  /// <para>
+  /// Any host-side filtering (thread, time range, call-tree instance) should be applied inside
+  /// <paramref name="project"/> by returning <c>false</c> to skip a sample. Call <see cref="GetReport"/>
+  /// once this returns.
+  /// </para>
+  /// </summary>
+  /// <param name="startIndex">Inclusive first sample index.</param>
+  /// <param name="endIndex">Exclusive last sample index.</param>
+  /// <param name="project">Thread-safe projection of a sample into leaf-first <see cref="ResolvedFrame"/>s.</param>
+  /// <param name="buildCallTree">When false, skips call-tree construction entirely (only profiles).</param>
+  /// <param name="maxWorkers">Max worker threads; &lt;= 0 uses <see cref="Environment.ProcessorCount"/>.</param>
+  public void AddResolvedSamplesParallel(int startIndex, int endIndex, ResolvedSampleProjector project,
+                                         bool buildCallTree = true, int maxWorkers = 0) {
+    ArgumentNullException.ThrowIfNull(project);
+    int count = endIndex - startIndex;
+    if (count <= 0) return;
+
+    int workers = maxWorkers > 0 ? maxWorkers : Environment.ProcessorCount;
+    workers = Math.Max(1, Math.Min(workers, count));
+    int chunkSize = (count + workers - 1) / workers; // ceil
+
+    var chunkTrees = buildCallTree ? new ProfileCallTree[workers] : null;
+    var tasks = new Task[workers];
+
+    for (int w = 0; w < workers; w++) {
+      int worker = w;
+      int chunkStart = startIndex + worker * chunkSize;
+      int chunkEnd = Math.Min(chunkStart + chunkSize, endIndex);
+
+      if (chunkStart >= chunkEnd) {
+        tasks[worker] = Task.CompletedTask;
+        continue;
+      }
+
+      tasks[worker] = Task.Run(() => {
+        var frames = new List<ResolvedFrame>();
+        var chunkTree = buildCallTree ? callTreeBuilder_.CreateChunkTree(worker, workers) : null;
+
+        for (int i = chunkStart; i < chunkEnd; i++) {
+          frames.Clear();
+
+          if (!project(i, frames, out var weight, out int threadId) || frames.Count == 0) {
+            continue;
+          }
+
+          sampleAggregator_.AddResolvedStack(weight, frames);
+
+          if (chunkTree != null) {
+            callTreeBuilder_.AddResolvedStackToChunk(chunkTree, weight, threadId, frames);
+          }
+        }
+
+        if (chunkTrees != null) {
+          chunkTrees[worker] = chunkTree;
+        }
+      });
+    }
+
+    Task.WaitAll(tasks);
+
+    if (chunkTrees != null) {
+      var built = new List<ProfileCallTree>(workers);
+
+      foreach (var tree in chunkTrees) {
+        if (tree != null) {
+          built.Add(tree);
+        }
+      }
+
+      callTreeBuilder_.MergeChunkTrees(built);
+    }
+
     InvalidateReport();
   }
 
@@ -291,6 +435,18 @@ public class FunctionProfiler : IDisposable {
 
   // Forward a diagnostic message to the consumer-provided sink (no-op when none is configured).
   private void Log(string message) => options_.LogCallback?.Invoke(message);
+
+  // Null-object symbol locator for CreateForResolvedInput (no download path is exercised).
+  private sealed class NullSymbolFileLocator : ISymbolFileLocator {
+    public static readonly NullSymbolFileLocator Instance = new();
+
+    public Task<string?> FindSymbolFileAsync(string pdbName, Guid guid, int age, CancellationToken ct = default) =>
+      Task.FromResult<string?>(null);
+
+    public Task<string?> FindBinaryFileAsync(string binaryName, int timeDateStamp, long imageSize,
+                                             CancellationToken ct = default) =>
+      Task.FromResult<string?>(null);
+  }
 
   /// <summary>
   /// Generate hot lines from instruction weights only, without requiring
