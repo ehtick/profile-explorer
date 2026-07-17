@@ -325,6 +325,11 @@ public class ProfileData {
 
     // Thread-safe projection of one resolved stack into the library's neutral ResolvedFrame form,
     // applying the same thread/instance filtering the sequential path did. Called concurrently.
+    // Returns false only when the sample is filtered out (excluded from everything, including the
+    // total). A sample that passes filtering returns true even when every frame is unknown: its
+    // weight still counts toward the total (matching the former FunctionProfileProcessor, which added
+    // each passed-filter sample's weight to the total before skipping unknown frames), but it
+    // contributes no per-function or call-tree data.
     bool Project(int index, List<ResolvedFrame> frames, out TimeSpan weight, out int threadId) {
       var entry = samples[index];
       var stack = entry.Stack;
@@ -353,7 +358,7 @@ public class ProfileData {
         }
       }
 
-      return frames.Count > 0;
+      return true;
     }
 
     profiler.AddResolvedSamplesParallel(startIndex, endIndex, Project, computeCallTree, workerCount);

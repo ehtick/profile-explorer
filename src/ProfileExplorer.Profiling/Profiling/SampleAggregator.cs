@@ -109,6 +109,43 @@ internal class SampleAggregator {
       return;
     }
 
+    AggregateFrames(weight, framesLeafFirst);
+
+    lock (totalWeightLock_) {
+      totalWeight_ += weight;
+    }
+  }
+
+  /// <summary>
+  /// Aggregate one PRE-RESOLVED, PRE-FILTERED stack's frames into the shared per-function map
+  /// WITHOUT updating <see cref="TotalWeight"/>. Used by the parallel driver
+  /// (<see cref="FunctionProfiler.AddResolvedSamplesParallel"/>), which batches the total per worker
+  /// via <see cref="AddTotalWeight"/> so the global total lock is taken once per worker instead of
+  /// once per sample. Thread-safe (per-function locks). Instance filtering is the caller's job.
+  /// </summary>
+  public void AggregateResolvedStack(TimeSpan weight, IReadOnlyList<ResolvedFrame> framesLeafFirst) {
+    if (framesLeafFirst.Count == 0) return;
+    AggregateFrames(weight, framesLeafFirst);
+  }
+
+  /// <summary>
+  /// Add a batch of weight to <see cref="TotalWeight"/> under a single lock. The parallel driver
+  /// accumulates a per-worker total (including passed-filter samples whose stack fully failed to
+  /// resolve — they contribute to the total denominator but to no function, matching Core's
+  /// FunctionProfileProcessor) and calls this once per worker.
+  /// </summary>
+  public void AddTotalWeight(TimeSpan weight) {
+    if (weight == TimeSpan.Zero) return;
+
+    lock (totalWeightLock_) {
+      totalWeight_ += weight;
+    }
+  }
+
+  // Aggregate a leaf-first resolved stack's frames into the shared per-function map: leaf frame gets
+  // exclusive weight; every unique function on the stack gets inclusive weight + a per-instruction
+  // sample (recursion credited once). Does not touch TotalWeight. Thread-safe (per-function locks).
+  private void AggregateFrames(TimeSpan weight, IReadOnlyList<ResolvedFrame> framesLeafFirst) {
     var credited = resolvedCredited_ ??= new HashSet<ProfileFunctionId>();
     credited.Clear();
     bool isTop = true;
@@ -130,10 +167,6 @@ internal class SampleAggregator {
       }
 
       isTop = false;
-    }
-
-    lock (totalWeightLock_) {
-      totalWeight_ += weight;
     }
   }
 

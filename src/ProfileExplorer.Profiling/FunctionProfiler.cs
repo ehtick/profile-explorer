@@ -157,7 +157,11 @@ public class FunctionProfiler : IDisposable {
   /// CallTreeProcessor while keeping aggregation in the library.
   /// <para>
   /// Any host-side filtering (thread, time range, call-tree instance) should be applied inside
-  /// <paramref name="project"/> by returning <c>false</c> to skip a sample. Call <see cref="GetReport"/>
+  /// <paramref name="project"/> by returning <c>false</c> to EXCLUDE a sample entirely (it counts
+  /// toward nothing, not even the total weight). Returning <c>true</c> with an empty frame list keeps
+  /// the sample's weight in the total (the percentage denominator) while attributing it to no
+  /// function or call-tree node — this is how a passed-filter sample whose stack fully failed to
+  /// resolve is handled, matching Core's FunctionProfileProcessor. Call <see cref="GetReport"/>
   /// once this returns.
   /// </para>
   /// </summary>
@@ -192,20 +196,35 @@ public class FunctionProfiler : IDisposable {
       tasks[worker] = Task.Run(() => {
         var frames = new List<ResolvedFrame>();
         var chunkTree = buildCallTree ? callTreeBuilder_.CreateChunkTree(worker, workers) : null;
+        var workerTotal = TimeSpan.Zero;
 
         for (int i = chunkStart; i < chunkEnd; i++) {
           frames.Clear();
 
-          if (!project(i, frames, out var weight, out int threadId) || frames.Count == 0) {
+          if (!project(i, frames, out var weight, out int threadId)) {
+            continue; // Filtered out (thread/instance/time) — excluded from the total, matching Core.
+          }
+
+          // A sample that passed filtering counts toward the total weight (the percentage
+          // denominator) even when its stack fully failed to resolve — matching Core's
+          // FunctionProfileProcessor, which added every passed-filter sample's weight to the total
+          // before skipping unknown frames. Such samples contribute to no function/call-tree node.
+          workerTotal += weight;
+
+          if (frames.Count == 0) {
             continue;
           }
 
-          sampleAggregator_.AddResolvedStack(weight, frames);
+          sampleAggregator_.AggregateResolvedStack(weight, frames);
 
           if (chunkTree != null) {
             callTreeBuilder_.AddResolvedStackToChunk(chunkTree, weight, threadId, frames);
           }
         }
+
+        // Fold this worker's total into the shared total with a single lock (instead of one lock per
+        // sample), reproducing the former per-chunk accumulate-then-merge without global contention.
+        sampleAggregator_.AddTotalWeight(workerTotal);
 
         if (chunkTrees != null) {
           chunkTrees[worker] = chunkTree;
