@@ -269,7 +269,16 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
   }
 
   private void InitializeFunctionList(List<FunctionDebugInfo> symbolList) {
-    symbolList.Sort();
+    // Sort by StartRVA (via CompareTo), breaking ties deterministically by name. ICF-folded functions
+    // share the same RVA (and often size), and DIA enumerates them in a non-deterministic order; an
+    // unstable RVA-only sort therefore lets that order leak into FindFunctionByRVA, making disassembly
+    // call-target names differ between runs. The ordinal name tie-break makes the list — and thus the
+    // resolved name for a folded address — stable and reproducible.
+    symbolList.Sort((a, b) => {
+      int rvaCompare = a.CompareTo(b);
+      return rvaCompare != 0 ? rvaCompare : string.CompareOrdinal(a.Name, b.Name);
+    });
+
     sortedFuncListOverlapping_ = false;
 
     for (int i = 0; i < symbolList.Count - 1; i++) {
@@ -411,6 +420,20 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
       finally { Marshal.ReleaseComObject(best); }
     }
     catch { return null; }
+  }
+
+  /// <summary>
+  /// Create a DIA data source (<c>Dia2Lib.IDiaDataSource</c>) using registration-free side-loading of
+  /// msdia140.dll, falling back to registered COM. Exposed so other DIA consumers (e.g. PE Core's
+  /// <c>PDBDebugInfoProvider</c>) share this activation path instead of depending on a
+  /// regsvr32-registered msdia140.dll — which may be missing or the wrong architecture (e.g. an x86
+  /// build hijacking the CLSID machine-wide). Returned as <see cref="object"/> so callers in other
+  /// assemblies don't need a direct Dia2Lib reference at the call site (they resolve the DIA type
+  /// transitively and cast). Returns null if both activation paths fail; see
+  /// <see cref="DiaRegistrationError"/>.
+  /// </summary>
+  public static object? CreateDiaDataSource() {
+    return CreateDiaSource();
   }
 
   private static IDiaDataSource? CreateDiaSource() {

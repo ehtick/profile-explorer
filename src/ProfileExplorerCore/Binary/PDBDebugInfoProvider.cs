@@ -629,31 +629,35 @@ public sealed class PDBDebugInfoProvider : IDebugInfoProvider {
 
     try {
       debugFilePath_ = debugFilePath;
-      diaSource_ = new DiaSourceClass();
-      diaSource_.loadDataFromPdb(debugFilePath);
-      diaSource_.openSession(out session_);
-    }
-    catch (Exception ex) {
-      // Check for DIA SDK COM registration issue - common in dev builds
-      bool isDiaRegistrationError = ex.Message.Contains("E6756135-1E65-4D17-8576-610761398C3C") ||
-                                    ex.Message.Contains("8007007E") ||
-                                    ex.Message.Contains("class factory");
-      if (isDiaRegistrationError) {
-        string errorMsg = $"DIA SDK (msdia140.dll) is not registered! " +
-                          $"Run as Admin: regsvr32 \"{AppContext.BaseDirectory}msdia140.dll\" " +
-                          $"or use the installed version of Profile Explorer.";
+
+      // Activate DIA (msdia140.dll) registration-free by side-loading the bundled x64 msdia140.dll,
+      // falling back to registered COM. Mirrors the library reader so PDB reading works even when
+      // msdia140.dll is unregistered or a wrong-architecture build is registered machine-wide (e.g.
+      // an x86 msdia140.dll planted by other software that hijacks the DIA CLSID). The factory
+      // returns object to avoid forcing a direct Dia2Lib reference here; cast to the DIA type.
+      diaSource_ = PdbSymbolProvider.CreateDiaDataSource() as IDiaDataSource;
+
+      if (diaSource_ == null) {
+        string errorMsg = $"Failed to load DIA SDK (msdia140.dll). {PdbSymbolProvider.DiaRegistrationError} " +
+                          $"Ensure msdia140.dll is present next to the application (\"{AppContext.BaseDirectory}\").";
         DiagnosticLogger.LogError($"[PDBLoad] [CRITICAL] {errorMsg}");
         Trace.TraceError(errorMsg);
 
-        // Set static flag so UI can detect and display error
+        // Set static flag so the UI can detect and display the error.
         if (!diaRegistrationFailed_) {
           diaRegistrationFailed_ = true;
           diaRegistrationError_ = errorMsg;
         }
+
+        loadFailed_ = true;
+        return false;
       }
-      else {
-        DiagnosticLogger.LogError($"[PDBLoad] Failed to load {debugFilePath}: {ex.Message}");
-      }
+
+      diaSource_.loadDataFromPdb(debugFilePath);
+      diaSource_.openSession(out session_);
+    }
+    catch (Exception ex) {
+      DiagnosticLogger.LogError($"[PDBLoad] Failed to load {debugFilePath}: {ex.Message}");
       Trace.TraceError($"Failed to load debug file {debugFilePath}: {ex.Message}");
       loadFailed_ = true;
       return false;
