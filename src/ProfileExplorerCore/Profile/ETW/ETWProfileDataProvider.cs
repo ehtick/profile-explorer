@@ -49,6 +49,7 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
   private Machine defaultArchitecture_ = Machine.Amd64; // Default to x64, updated from trace PointerSize
   private object lockObject_;
   private object[] imageLocks_;
+  private SemaphoreSlim[] imageCreationLocks_;
   private ConcurrentDictionary<int, ProfileModuleBuilder> imageModuleMap_;
   private HashSet<ProfileImage> rejectedDebugModules_;
   private int currentSampleIndex_;
@@ -174,6 +175,12 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
 
     for (int i = 0; i < imageLocks_.Length; i++) {
       imageLocks_[i] = new object();
+    }
+
+    imageCreationLocks_ = new SemaphoreSlim[IMAGE_LOCK_COUNT];
+
+    for (int i = 0; i < imageCreationLocks_.Length; i++) {
+      imageCreationLocks_[i] = new SemaphoreSlim(1, 1);
     }
 
     // Clear static caches from any previous trace load to prevent
@@ -1509,30 +1516,34 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
 
   private async Task<ProfileModuleBuilder> GetModuleBuilderAsync(RawProfileData rawProfile, ProfileImage queryImage, int processId,
                                                 SymbolFileSourceSettings symbolSettings) {
-    // prevImage_/prevModule_ are TLS variables since this is called from multiple threads.
+    // prevImage_/prevProfileModuleBuilder_ are [ThreadStatic] caches (this is called from multiple threads).
     if (queryImage == prevImage_) {
       return prevProfileModuleBuilder_;
     }
 
-    if (!imageModuleMap_.TryGetValue(queryImage.Id, out var imageModule)) {
-      // TODO: Why not lock on queryImage?
-      lock (imageLocks_[queryImage.Id % IMAGE_LOCK_COUNT]) {
-        if (imageModuleMap_.TryGetValue(queryImage.Id, out imageModule)) {
-          prevImage_ = queryImage;
-          prevProfileModuleBuilder_ = imageModule;
-          return imageModule;
-        }
-      }
+    if (imageModuleMap_.TryGetValue(queryImage.Id, out var imageModule)) {
+      prevImage_ = queryImage;
+      prevProfileModuleBuilder_ = imageModule;
+      return imageModule;
+    }
 
-      // Create the module builder outside the lock to avoid blocking other threads
-      imageModule = await CreateModuleBuilderAsync(queryImage, rawProfile, processId, symbolSettings).ConfigureAwait(false);
+    // Serialize creation per image so each module (and its PDB, read via DIA) is built EXACTLY ONCE.
+    // Previously the builder was created OUTSIDE the lock, so multiple worker threads could build the
+    // same module concurrently and race to publish it. With working DIA those concurrent PDB loads
+    // produced non-deterministic symbol state, which flipped frame/function resolution — and therefore
+    // exclusive-weight (leaf) attribution for borderline functions — between runs. A SemaphoreSlim is
+    // used (not lock) because creation is async; a double-check inside the guard avoids rebuilding.
+    var creationLock = imageCreationLocks_[queryImage.Id % IMAGE_LOCK_COUNT];
+    await creationLock.WaitAsync().ConfigureAwait(false);
 
-      // Add to the cache. If another thread already added a module, use that one instead
-      // to ensure all threads share the same (hopefully initialized) instance.
-      if (!imageModuleMap_.TryAdd(queryImage.Id, imageModule)) {
-        // Another thread won the race - use their module instead
-        imageModule = imageModuleMap_[queryImage.Id];
+    try {
+      if (!imageModuleMap_.TryGetValue(queryImage.Id, out imageModule)) {
+        imageModule = await CreateModuleBuilderAsync(queryImage, rawProfile, processId, symbolSettings).ConfigureAwait(false);
+        imageModuleMap_[queryImage.Id] = imageModule;
       }
+    }
+    finally {
+      creationLock.Release();
     }
 
     prevImage_ = queryImage;
