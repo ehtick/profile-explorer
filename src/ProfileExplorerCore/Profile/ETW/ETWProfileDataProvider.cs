@@ -207,6 +207,16 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
     // They need to remain alive for dynamic on-demand binary loading
     // (e.g., when user views assembly after trace is loaded).
     // ProfileModuleBuilder instances should live as long as the profile data is being used.
+
+    // Dispose the per-image creation semaphores so their managed wait resources are not
+    // kept alive across repeated trace loads.
+    if (imageCreationLocks_ != null) {
+      foreach (var creationLock in imageCreationLocks_) {
+        creationLock?.Dispose();
+      }
+
+      imageCreationLocks_ = null;
+    }
   }
 
   /// <summary>
