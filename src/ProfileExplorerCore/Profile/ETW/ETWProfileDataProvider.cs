@@ -1538,8 +1538,11 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
 
     try {
       if (!imageModuleMap_.TryGetValue(queryImage.Id, out imageModule)) {
-        imageModule = await CreateModuleBuilderAsync(queryImage, rawProfile, processId, symbolSettings).ConfigureAwait(false);
-        imageModuleMap_[queryImage.Id] = imageModule;
+        var createdModule = await CreateModuleBuilderAsync(queryImage, rawProfile, processId, symbolSettings).ConfigureAwait(false);
+        // Publish with GetOrAdd (not the indexer): if another thread — e.g. the sync GetModuleBuilder
+        // path, which guards on a different lock — already inserted a builder, keep theirs so every
+        // consumer shares the exact same instance and no cached entry is ever overwritten.
+        imageModule = imageModuleMap_.GetOrAdd(queryImage.Id, createdModule);
       }
     }
     finally {
