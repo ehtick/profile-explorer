@@ -202,15 +202,10 @@ public sealed class ETWProfileDataProvider : IProfileDataProvider, IDisposable {
     // (e.g., when user views assembly after trace is loaded).
     // ProfileModuleBuilder instances should live as long as the profile data is being used.
 
-    // Dispose the per-image creation semaphores so their managed wait resources are not
-    // kept alive across repeated trace loads.
-    if (imageCreationLocks_ != null) {
-      foreach (var creationLock in imageCreationLocks_) {
-        creationLock?.Dispose();
-      }
-
-      imageCreationLocks_ = null;
-    }
+    // NOTE: Do not dispose imageCreationLocks_ here. CloseTrace/Reset can dispose the provider while
+    // trace load or disassembly is still in-flight; disposing SemaphoreSlim while it is being
+    // waited/released can throw ObjectDisposedException. This array is small and will be reclaimed
+    // with the provider.
   }
 
   /// <summary>
