@@ -32,7 +32,7 @@ public static class ProfileReportMapper {
   /// exclusive weights (the leaf-attributed time), consistent with Core's module-weight semantics.
   /// </param>
   public static void ApplyReport(ProfileData target, ProfileReport report,
-                                 Func<ProfileFunctionId, IRTextFunction> resolveFunction,
+                                 Func<ProfileFunctionId, IRTextFunction?> resolveFunction,
                                  Func<string, int> moduleIdByName) {
     ArgumentNullException.ThrowIfNull(target);
     ArgumentNullException.ThrowIfNull(report);
@@ -56,7 +56,9 @@ public static class ProfileReportMapper {
 
       // Module time is the leaf-attributed (exclusive) time, aggregated per module — matching Core's
       // FunctionProfileProcessor, which accumulates module weight from the top (leaf) stack frame.
-      int moduleId = moduleIdByName(id.ModuleName);
+      // ProfileFunctionId.ModuleName is null for the default/unknown id (the struct only normalizes
+      // nulls when built through its constructor), so such frames map to the "no module" id 0.
+      int moduleId = id.ModuleName != null ? moduleIdByName(id.ModuleName) : 0;
       moduleWeights.TryGetValue(moduleId, out var existing);
       moduleWeights[moduleId] = existing + data.ExclusiveWeight;
     }
