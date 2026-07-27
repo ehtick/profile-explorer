@@ -151,7 +151,7 @@ public sealed class ResolvedProfileStackFrameDetails : IEquatable<ResolvedProfil
                                           ProfileImage image, bool isManagedCode) {
     DebugInfo = debugInfo;
     Function = function;
-    FunctionId = function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
+    FunctionId = new ProfileFunctionId(function?.ModuleName, function?.Name);
     Image = image;
     IsManagedCode = isManagedCode;
   }
