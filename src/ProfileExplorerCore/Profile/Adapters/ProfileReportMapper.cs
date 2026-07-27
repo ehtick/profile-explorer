@@ -56,9 +56,7 @@ public static class ProfileReportMapper {
 
       // Module time is the leaf-attributed (exclusive) time, aggregated per module — matching Core's
       // FunctionProfileProcessor, which accumulates module weight from the top (leaf) stack frame.
-      // ProfileFunctionId.ModuleName is null for the default/unknown id (the struct only normalizes
-      // nulls when built through its constructor), so such frames map to the "no module" id 0.
-      int moduleId = id.ModuleName != null ? moduleIdByName(id.ModuleName) : 0;
+      int moduleId = moduleIdByName(id.ModuleName);
       moduleWeights.TryGetValue(moduleId, out var existing);
       moduleWeights[moduleId] = existing + data.ExclusiveWeight;
     }

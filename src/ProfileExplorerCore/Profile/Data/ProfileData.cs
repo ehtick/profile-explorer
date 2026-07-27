@@ -350,12 +350,11 @@ public class ProfileData {
         }
 
         var details = frame.FrameDetails;
-        var functionId = NormalizeFunctionId(details.FunctionId);
-        frames.Add(new ResolvedFrame(functionId, details.DebugInfo, frame.FrameRVA,
+        frames.Add(new ResolvedFrame(details.FunctionId, details.DebugInfo, frame.FrameRVA,
                                      details.IsKernelCode, details.IsManagedCode));
 
         if (details.Function != null) {
-          functionResolver.TryAdd(functionId, details.Function);
+          functionResolver.TryAdd(details.FunctionId, details.Function);
         }
       }
 
@@ -370,22 +369,13 @@ public class ProfileData {
 
     ProfileReportMapper.ApplyReport(result, report,
       id => functionResolver.TryGetValue(id, out var func) ? func : null,
-      name => name != null ? moduleIdByName.GetValueOrDefault(name, 0) : 0);
+      name => moduleIdByName.GetValueOrDefault(name, 0));
 
     if (!computeCallTree) {
       result.CallTree = null;
     }
 
     return result;
-  }
-
-  // ResolvedProfileStackFrameDetails.FunctionId is `default` (null module/function names) for frames
-  // with no IRTextFunction, which would produce report keys with a null ModuleName and unstable
-  // aggregation buckets. Rebuild such ids through the constructor, which normalizes nulls.
-  private static ProfileFunctionId NormalizeFunctionId(ProfileFunctionId id) {
-    return id.ModuleName != null && id.FunctionName != null
-      ? id
-      : new ProfileFunctionId(id.ModuleName, id.FunctionName);
   }
 
   // Builds the per-instance root-first ProfileFunctionId paths used to focus the profile on specific

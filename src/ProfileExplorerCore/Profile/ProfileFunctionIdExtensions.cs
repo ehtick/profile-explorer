@@ -10,6 +10,6 @@ namespace ProfileExplorer.Core.Profile;
 /// </summary>
 public static class ProfileFunctionIdExtensions {
   public static ProfileFunctionId ToProfileId(this IRTextFunction function) {
-    return function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
+    return new ProfileFunctionId(function?.ModuleName, function?.Name);
   }
 }
