@@ -9,7 +9,7 @@ namespace ProfileExplorer.Core.Profile;
 /// (so it can live in the library alongside the migrated profiling model).
 /// </summary>
 public static class ProfileFunctionIdExtensions {
-  public static ProfileFunctionId ToProfileId(this IRTextFunction function) {
-    return function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
+  public static ProfileFunctionId ToProfileId(this IRTextFunction? function) {
+    return new ProfileFunctionId(function?.ModuleName, function?.Name);
   }
 }

@@ -116,7 +116,7 @@ public sealed class ResolvedProfileStack : IResolvedCallStack {
                                       details.IsKernelCode, details.IsManagedCode);
   }
 
-  public void AddFrame(IRTextFunction function, long frameIP, long frameRVA, int frameIndex,
+  public void AddFrame(IRTextFunction? function, long frameIP, long frameRVA, int frameIndex,
                        ResolvedProfileStackFrameKey frameDetails, ProfileStack stack, int pointerSize) {
     // Deduplicate the frame.
     var uniqueFrame = uniqueFrames_.GetOrAdd(frameDetails, CreateResolvedProfileStackFrameDetails, function);
@@ -137,7 +137,7 @@ public sealed class ResolvedProfileStack : IResolvedCallStack {
   }
 
   private static ResolvedProfileStackFrameDetails CreateResolvedProfileStackFrameDetails(
-    ResolvedProfileStackFrameKey frameDetails, IRTextFunction function) {
+    ResolvedProfileStackFrameKey frameDetails, IRTextFunction? function) {
     return new ResolvedProfileStackFrameDetails(frameDetails.DebugInfo, function, frameDetails.Image,
                                                 frameDetails.IsManagedCode);
   }
@@ -147,18 +147,18 @@ public sealed class ResolvedProfileStack : IResolvedCallStack {
 public sealed class ResolvedProfileStackFrameDetails : IEquatable<ResolvedProfileStackFrameDetails> {
   public static readonly ResolvedProfileStackFrameDetails Unknown = new();
 
-  public ResolvedProfileStackFrameDetails(FunctionDebugInfo debugInfo, IRTextFunction function,
+  public ResolvedProfileStackFrameDetails(FunctionDebugInfo debugInfo, IRTextFunction? function,
                                           ProfileImage image, bool isManagedCode) {
     DebugInfo = debugInfo;
     Function = function;
-    FunctionId = function != null ? new ProfileFunctionId(function.ModuleName, function.Name) : default;
+    FunctionId = new ProfileFunctionId(function?.ModuleName, function?.Name);
     Image = image;
     IsManagedCode = isManagedCode;
   }
 
   private ResolvedProfileStackFrameDetails() { }
   public FunctionDebugInfo DebugInfo { get; set; }
-  public IRTextFunction Function { get; set; }
+  public IRTextFunction? Function { get; set; }
   // Neutral (module, name) identity precomputed from Function so the call-tree build
   // path can remain free of IRTextFunction.
   public ProfileFunctionId FunctionId { get; set; }

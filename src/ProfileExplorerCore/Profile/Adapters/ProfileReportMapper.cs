@@ -32,7 +32,7 @@ public static class ProfileReportMapper {
   /// exclusive weights (the leaf-attributed time), consistent with Core's module-weight semantics.
   /// </param>
   public static void ApplyReport(ProfileData target, ProfileReport report,
-                                 Func<ProfileFunctionId, IRTextFunction> resolveFunction,
+                                 Func<ProfileFunctionId, IRTextFunction?> resolveFunction,
                                  Func<string, int> moduleIdByName) {
     ArgumentNullException.ThrowIfNull(target);
     ArgumentNullException.ThrowIfNull(report);

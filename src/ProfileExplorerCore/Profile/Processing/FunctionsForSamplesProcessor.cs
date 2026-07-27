@@ -39,7 +39,7 @@ public sealed class FunctionsForSamplesProcessor : ProfileSampleProcessor {
     var data = (ChunkData)chunkData;
 
     foreach (var stackFrame in stack.StackFrames) {
-      if (!stackFrame.IsUnknown) {
+      if (!stackFrame.IsUnknown && stackFrame.FrameDetails.Function != null) {
         data.functionSet_.Add(stackFrame.FrameDetails.Function);
       }
     }

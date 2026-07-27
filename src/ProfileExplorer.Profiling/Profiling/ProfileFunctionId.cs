@@ -18,21 +18,36 @@ namespace ProfileExplorer.Core.Profile;
 /// </para>
 /// </summary>
 public readonly record struct ProfileFunctionId {
-  public ProfileFunctionId(string moduleName, string functionName) {
-    ModuleName = moduleName ?? string.Empty;
-    FunctionName = functionName ?? string.Empty;
+  private readonly string? moduleName_;
+  private readonly string? functionName_;
+
+  public ProfileFunctionId(string? moduleName, string? functionName) {
+    moduleName_ = moduleName;
+    functionName_ = functionName;
   }
 
-  /// <summary>Owning module/image name (e.g., "ntdll.dll").</summary>
-  public string ModuleName { get; }
+  /// <summary>Owning module/image name (e.g., "ntdll.dll"). Never null; empty when unresolved.</summary>
+  public string ModuleName => moduleName_ ?? string.Empty;
 
-  /// <summary>Function name (as it appears in the module's symbols).</summary>
-  public string FunctionName { get; }
+  /// <summary>Function name (as it appears in the module's symbols). Never null; empty when unresolved.</summary>
+  public string FunctionName => functionName_ ?? string.Empty;
 
   /// <summary>True when this identity is empty/unresolved.</summary>
-  public bool IsUnknown => string.IsNullOrEmpty(FunctionName);
+  public bool IsUnknown => string.IsNullOrEmpty(functionName_);
 
   public static ProfileFunctionId Unknown => default;
+
+  // Treat null and empty names as the same identity so a `default` struct (which bypasses the
+  // constructor) compares and hashes equal to an explicitly built empty id. The compiler-synthesized
+  // record equality would otherwise compare the raw backing fields and split "unknown" frames across
+  // separate null-keyed and empty-keyed buckets.
+  public bool Equals(ProfileFunctionId other) {
+    return ModuleName == other.ModuleName && FunctionName == other.FunctionName;
+  }
+
+  public override int GetHashCode() {
+    return HashCode.Combine(ModuleName, FunctionName);
+  }
 
   public override string ToString() => $"{ModuleName}!{FunctionName}";
 }
