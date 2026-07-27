@@ -61,7 +61,7 @@ public static class RawProfileLibraryAdapter {
 
       var image = profile.FindImageForIP(sample.IP, context.ProcessId);
       var stack = sample.GetStack(profile);
-      long[] frames = stack.IsUnknown ? null : stack.FramePointers;
+      long[]? frames = stack.IsUnknown ? null : stack.FramePointers;
 
       yield return new RawProfileSampleAdapter(
         sample.IP, sample.Weight, context.ProcessId, context.ThreadId,
@@ -75,7 +75,7 @@ public static class RawProfileLibraryAdapter {
 /// resolved from the trace's ImageID_DBG events (may be <c>null</c> when the trace lacks RSDS data).
 /// </summary>
 public sealed class RawProfileImageAdapter : IProfileImage {
-  public RawProfileImageAdapter(ProfileImage image, int processId, SymbolFileDescriptor symbolFile) {
+  public RawProfileImageAdapter(ProfileImage image, int processId, SymbolFileDescriptor? symbolFile) {
     ImageName = image.ModuleName ?? string.Empty;
     BaseAddress = image.BaseAddress;
     Size = image.Size;
@@ -101,10 +101,10 @@ public sealed class RawProfileImageAdapter : IProfileImage {
 /// sample's leaf-first <see cref="ProfileStack.FramePointers"/> (frame 0 is the leaf / sample IP).
 /// </summary>
 public sealed class RawProfileSampleAdapter : IProfileSample {
-  private readonly long[] stackFrames_;
+  private readonly long[]? stackFrames_;
 
   public RawProfileSampleAdapter(long ip, TimeSpan weight, int processId, int threadId,
-                                 string? imageName, long imageBaseAddress, long[] stackFrames) {
+                                 string? imageName, long imageBaseAddress, long[]? stackFrames) {
     InstructionPointer = ip;
     Weight = weight;
     ProcessId = processId;

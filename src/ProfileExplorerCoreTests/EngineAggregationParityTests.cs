@@ -123,6 +123,59 @@ public class EngineAggregationParityTests {
     Assert.AreEqual(expectedTotal, parallel.TotalWeight, "parallel total equals summed sample weight");
   }
 
+  [TestMethod]
+  [TestCategory("Aggregation")]
+  public void ComputeProfile_ImageResolvedButNoFunction_AttributesLeafWeightToModuleZero() {
+    // End-to-end guard for the ProfileFunctionId normalization: a frame can resolve to an image (so
+    // it is NOT "unknown" and is not skipped) yet have no IRTextFunction — e.g. an address inside a
+    // known module with no matching symbol. Its FunctionId normalizes to the empty "unknown" identity,
+    // so ComputeProfile must key it by ProfileFunctionId.Unknown and attribute its leaf (exclusive)
+    // weight to the "no module" bucket (id 0), never leaking it into the real module's weight.
+    ResolvedProfileStack.ResetCaches();
+
+    const int realModuleId = 1;
+    var image = new ProfileImage(Module, Module, Base, Base, ModuleSize, timeStamp: 0, checksum: 0);
+    var summary = new IRTextSummary(Module);
+    var knownIr = new IRTextFunction("Known");
+    summary.AddFunction(knownIr);
+
+    var input = new ProfileData();
+    input.Modules[realModuleId] = image; // real module -> non-zero id; "" (unknown) -> 0
+
+    var context = new ProfileContext(100, 200, 0);
+    var rawStack = new ProfileStack(contextId: 0, framePtrs: new long[2]);
+    var resolved = new ResolvedProfileStack(2, context);
+
+    // Leaf: resolved image but function: null -> not unknown, FunctionId normalizes to ("", "").
+    resolved.AddFrame(function: null, frameIP: Base + 0x2040, frameRVA: 0x2040, frameIndex: 0,
+                      new ResolvedProfileStackFrameKey(new FunctionDebugInfo("", 0x2000, 0x100), image, false),
+                      rawStack, pointerSize: 8);
+    // Caller: fully resolved function in the real module.
+    resolved.AddFrame(knownIr, frameIP: Base + 0x1080, frameRVA: 0x1080, frameIndex: 1,
+                      new ResolvedProfileStackFrameKey(new FunctionDebugInfo("Known", 0x1000, 0x100), image, false),
+                      rawStack, pointerSize: 8);
+
+    input.Samples.Add((new ProfileSample(Base + 0x2040, TimeSpan.Zero, TimeSpan.FromMilliseconds(10),
+                                         isKernelCode: false, contextId: 0), resolved));
+    input.ComputeThreadSampleRanges();
+
+    var result = input.ComputeProfile(input, new ProfileSampleFilter(), computeCallTree: false);
+
+    // The image-but-no-function leaf is keyed by the normalized unknown id (default == new("","") == Unknown)
+    // and holds the leaf (exclusive) weight.
+    Assert.IsTrue(result.FunctionProfiles.ContainsKey(ProfileFunctionId.Unknown),
+                  "image-but-no-function leaf is keyed by the normalized unknown id");
+    Assert.AreEqual(TimeSpan.FromMilliseconds(10),
+                    result.FunctionProfiles[ProfileFunctionId.Unknown].ExclusiveWeight,
+                    "unknown leaf holds the exclusive (leaf) weight");
+
+    // That weight is attributed to module 0, and the real module receives none of it.
+    Assert.AreEqual(TimeSpan.FromMilliseconds(10), result.ModuleWeights.GetValueOrDefault(0),
+                    "unknown-module leaf weight lands in module 0");
+    Assert.AreEqual(TimeSpan.Zero, result.ModuleWeights.GetValueOrDefault(realModuleId),
+                    "real module receives no exclusive leaf weight from the unknown frame");
+  }
+
   // Deterministic synthetic stacks across several threads with varied depth, offsets, and Foo
   // recursion, sized to span multiple parallel workers.
   private static (int ThreadId, int WeightMs, (Fn Func, long Offset)[] Frames)[] GenerateStacks(int count) {
