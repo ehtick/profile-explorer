@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="ProfileExplorer.Profiling.Tests" />
+    <!-- Cross-engine parity tests drive the internal SampleAggregator alongside Core's FunctionProfileProcessor. -->
+    <InternalsVisibleTo Include="ProfileExplorerCoreTests" />
   </ItemGroup>
 
   <ItemGroup>

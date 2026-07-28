@@ -79,6 +79,15 @@ public class BaseSession : ISession
       return null;
     }
 
+    // LAZY BINARY LOADING: the ETW load path skips binaries during trace load
+    // (skipBinaryDownload: true) and fetches them on-demand. Mirror the UI's MainWindowSession and the
+    // MCP executor so headless consumers (MCP server, tests) also load the binary here before
+    // disassembling. EnsureBinaryLoaded swaps the dummy loader for the real DisassemblerSectionLoader
+    // in place; it is idempotent (a no-op once the binary is already loaded).
+    if (!docInfo.BinaryFileExists && docInfo.EnsureBinaryLoaded != null) {
+      await docInfo.EnsureBinaryLoaded().ConfigureAwait(false);
+    }
+
     var parsedSection = docInfo.Loader.LoadSection(section);
 
     if (parsedSection != null && parsedSection.Function != null) {
