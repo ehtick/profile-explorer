@@ -88,7 +88,7 @@ internal class CallTreeBuilder {
   }
 
   /// <summary>
-  /// Add one PRE-RESOLVED stack (leaf-first) to a chunk-local tree. No locking ΓÇö each chunk tree is
+  /// Add one PRE-RESOLVED stack (leaf-first) to a chunk-local tree. No locking, each chunk tree is
   /// owned by a single worker thread; call <see cref="MergeChunkTrees"/> once all workers finish.
   /// </summary>
   public void AddResolvedStackToChunk(ProfileCallTree chunkTree, TimeSpan weight, int threadId,
