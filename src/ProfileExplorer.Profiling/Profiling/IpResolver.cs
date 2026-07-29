@@ -14,13 +14,16 @@ namespace ProfileExplorer.Profiling.Profiling;
 internal class IpResolver {
   private readonly SortedList<long, ImageInfo> imagesByBaseAddress_ = [];
   private readonly Dictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
-  // Provider (with a DIA fallback that resolves PGO-split function chunks the contiguous list omits)
-  // plus a per-module RVA cache so repeated return addresses don't re-query DIA. Populated alongside
-  // the sorted list so Resolve can match Core's FindFunctionByRVA behavior for split functions.
-  // The cache is a ConcurrentDictionary so the common warm-path (return address already resolved)
-  // is lock-free even though Resolve runs on parallel worker threads.
-  private readonly Dictionary<string, ISymbolDebugInfo> providersByModule_ = new(StringComparer.OrdinalIgnoreCase);
-  private readonly Dictionary<string, ConcurrentDictionary<long, FunctionDebugInfo?>> fallbackCacheByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  // Per-module debug-info provider paired with its own RVA cache. The provider has a DIA fallback that
+  // resolves PGO-split function chunks the contiguous list omits; the cache memoizes results so a
+  // repeated return address doesn't re-query DIA. Both live in one entry so "provider present" always
+  // implies "cache present" (no parallel-map invariant to violate), and it's a ConcurrentDictionary so
+  // reads are lock-free and robust even if registration ever overlaps resolution on worker threads.
+  private readonly record struct ModuleResolver(
+    ISymbolDebugInfo Provider,
+    ConcurrentDictionary<long, FunctionDebugInfo?> Cache);
+
+  private readonly ConcurrentDictionary<string, ModuleResolver> resolversByModule_ = new(StringComparer.OrdinalIgnoreCase);
   private readonly object fallbackLock_ = new();
   private readonly ManagedMethodResolver? managedResolver_;
 
@@ -46,8 +49,7 @@ internal class IpResolver {
     sortedFunctionsByModule_[moduleName] = sortedFunctions;
 
     if (debugInfo != null) {
-      providersByModule_[moduleName] = debugInfo;
-      fallbackCacheByModule_[moduleName] = new ConcurrentDictionary<long, FunctionDebugInfo?>();
+      resolversByModule_[moduleName] = new ModuleResolver(debugInfo, new ConcurrentDictionary<long, FunctionDebugInfo?>());
     }
   }
 
@@ -60,19 +62,16 @@ internal class IpResolver {
   // parallel worker threads. Only a cold miss takes fallbackLock_: DIA (COM) is not thread-safe, and
   // provider.FindFunctionByRVA touches DIA for the rare split-chunk case (Core calls it unlocked; we
   // guard it), so contention is limited to genuinely new addresses.
-  private FunctionDebugInfo? ResolveViaProvider(string moduleName, long moduleRva) {
-    if (!providersByModule_.TryGetValue(moduleName, out var provider)) return null;
-
-    var cache = fallbackCacheByModule_[moduleName];
-    if (cache.TryGetValue(moduleRva, out var cached)) return cached; // lock-free warm path
+  private FunctionDebugInfo? ResolveViaProvider(in ModuleResolver resolver, long moduleRva) {
+    if (resolver.Cache.TryGetValue(moduleRva, out var cached)) return cached; // lock-free warm path
 
     FunctionDebugInfo? func;
     lock (fallbackLock_) {
       // Re-check under the lock so concurrent misses on the same RVA query DIA only once.
-      if (cache.TryGetValue(moduleRva, out var raced)) return raced;
+      if (resolver.Cache.TryGetValue(moduleRva, out var raced)) return raced;
 
-      func = provider.FindFunctionByRVA(moduleRva);
-      cache[moduleRva] = func;
+      func = resolver.Provider.FindFunctionByRVA(moduleRva);
+      resolver.Cache[moduleRva] = func;
     }
 
     return func;
@@ -105,8 +104,8 @@ internal class IpResolver {
       // DIA-backed lookup (matches Core). The plain contiguous BinarySearch returns the wrong function
       // for overlapping/nested symbols (e.g. an assembly label nested inside a larger function)
       // and misses PGO-split chunks entirely, so split functions lose their inclusive time.
-      var func = providersByModule_.ContainsKey(image.Name)
-        ? ResolveViaProvider(image.Name, moduleRva)
+      var func = resolversByModule_.TryGetValue(image.Name, out var resolver)
+        ? ResolveViaProvider(resolver, moduleRva)
         : FunctionDebugInfo.BinarySearch(functions, moduleRva);
 
       if (func != null) {
