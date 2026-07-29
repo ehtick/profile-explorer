@@ -13,7 +13,7 @@ namespace ProfileExplorer.Profiling.Profiling;
 /// </summary>
 internal class IpResolver {
   private readonly SortedList<long, ImageInfo> imagesByBaseAddress_ = [];
-  private readonly Dictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly ConcurrentDictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
   // Per-module debug-info provider paired with its own RVA cache. The provider has a DIA fallback that
   // resolves PGO-split function chunks the contiguous list omits; the cache memoizes results so a
   // repeated return address doesn't re-query DIA. Both live in one entry so "provider present" always
