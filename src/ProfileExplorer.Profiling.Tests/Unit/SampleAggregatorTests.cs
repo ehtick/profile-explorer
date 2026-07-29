@@ -192,6 +192,62 @@ public class SampleAggregatorTests {
   }
 
   [TestMethod]
+  public void UserImagelessLeaf_ResolvedCallersStillCreditedInclusive() {
+    // Reviewer regression: a user-space imageless leaf must NOT stop stack processing. Core resolves
+    // the leaf into a synthetic frame and keeps walking, so resolved caller frames below it still
+    // receive inclusive weight (the leaf's `continue` used to drop the whole caller walk).
+    var resolver = new IpResolver();
+    resolver.AddImage("test.dll", 0x1000, 0x10000);
+    resolver.SetFunctions("test.dll", [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
+
+    var aggregator = new SampleAggregator(resolver);
+    var weight = TimeSpan.FromMilliseconds(1);
+
+    // Leaf is user-space imageless (ImageName null); its caller (index 1) resolves to test.dll!Bar.
+    var samples = new List<IProfileSample> {
+      new SyntheticSample(0x800000, weight, 1, 1, null, 0, new long[] { 0x800000, 0x1200 })
+    };
+
+    aggregator.AddSamples(samples);
+    var profiles = aggregator.Build();
+
+    var unknown = profiles.First(p => p.Key.FunctionName == "(unknown)").Value;
+    Assert.AreEqual(weight, unknown.ExclusiveWeight, "imageless leaf keeps its self weight in (unknown)");
+
+    var bar = profiles.First(p => p.Key.FunctionName == "Bar").Value;
+    Assert.AreEqual(weight, bar.Weight, "resolved caller above an imageless leaf must get inclusive weight");
+    Assert.AreEqual(TimeSpan.Zero, bar.ExclusiveWeight, "caller is not the leaf, so no exclusive weight");
+    Assert.AreEqual(weight, aggregator.TotalWeight, "user-imageless leaf counts toward the total");
+  }
+
+  [TestMethod]
+  public void KernelImagelessLeaf_ResolvedCallersStillCreditedInclusive() {
+    // Same latent bug on the kernel path: a kernel-space imageless leaf is a null frame (no self
+    // weight, excluded from the total), but Core still walks the stack, so resolved callers below it
+    // get inclusive weight. Only the leaf is dropped — not the whole stack.
+    var resolver = new IpResolver();
+    resolver.AddImage("test.dll", 0x1000, 0x10000);
+    resolver.SetFunctions("test.dll", [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
+
+    var aggregator = new SampleAggregator(resolver);
+    var weight = TimeSpan.FromMilliseconds(1);
+
+    long kernelLeaf = unchecked((long)0xFFFF800000001000);
+    var samples = new List<IProfileSample> {
+      new SyntheticSample(kernelLeaf, weight, 1, 1, null, 0, new long[] { kernelLeaf, 0x1200 })
+    };
+
+    aggregator.AddSamples(samples);
+    var profiles = aggregator.Build();
+
+    Assert.IsFalse(profiles.Any(p => p.Key.FunctionName == "(unknown)"),
+                   "kernel-space imageless leaf must not be bucketed");
+    var bar = profiles.First(p => p.Key.FunctionName == "Bar").Value;
+    Assert.AreEqual(weight, bar.Weight, "resolved caller above a kernel imageless leaf must get inclusive weight");
+    Assert.AreEqual(TimeSpan.Zero, aggregator.TotalWeight, "kernel imageless leaf itself does not count toward the total");
+  }
+
+  [TestMethod]
   public void PercentCalculation_RelativeToTotalWeight() {
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
