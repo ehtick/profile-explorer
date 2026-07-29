@@ -27,6 +27,10 @@ internal class IpResolver {
   private readonly object fallbackLock_ = new();
   private readonly ManagedMethodResolver? managedResolver_;
 
+  // Cached OS pointer size (bytes) derived from the registered image address space; 0 = not yet
+  // computed. Invalidated whenever an image is added.
+  private int pointerSize_;
+
   public IpResolver(ManagedMethodResolver? managedResolver = null) {
     managedResolver_ = managedResolver;
   }
@@ -36,6 +40,33 @@ internal class IpResolver {
   /// </summary>
   public void AddImage(string imageName, long baseAddress, int size) {
     imagesByBaseAddress_[baseAddress] = new ImageInfo(imageName, baseAddress, size);
+    pointerSize_ = 0; // Invalidate the derived pointer size; recomputed on next query.
+  }
+
+  /// <summary>
+  /// OS pointer size (bytes) for this trace, derived from the registered image address space: a 64-bit
+  /// trace always loads at least one image above 4 GB (ntdll, the kernel, ASLR'd modules), whereas a
+  /// 32-bit-OS trace keeps everything below 4 GB. Lets callers pick the correct kernel/user address
+  /// split (<see cref="ProfileAddress.IsKernelAddress"/>) without plumbing the value through. Defaults
+  /// to 8 (64-bit) when no images are registered. Cached; recomputed after <see cref="AddImage"/>.
+  /// </summary>
+  public int PointerSize {
+    get {
+      if (pointerSize_ == 0) {
+        bool any64 = false;
+
+        foreach (long baseAddress in imagesByBaseAddress_.Keys) {
+          if ((ulong)baseAddress >= 0x1_0000_0000UL) {
+            any64 = true;
+            break;
+          }
+        }
+
+        pointerSize_ = any64 || imagesByBaseAddress_.Count == 0 ? 8 : 4;
+      }
+
+      return pointerSize_;
+    }
   }
 
   /// <summary>

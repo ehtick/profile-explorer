@@ -61,7 +61,7 @@ internal class SampleAggregator {
       //     this per-thread to keep its call tree from self-recursing; the flat report needs only one
       //     bucket to reproduce Core's Sum(ExclusiveWeight) total.)
       if (string.IsNullOrEmpty(sample.ImageName)) {
-        if (ProfileAddress.IsKernelAddress((ulong)sample.InstructionPointer, pointerSize: 8)) {
+        if (ProfileAddress.IsKernelAddress((ulong)sample.InstructionPointer, ipResolver_.PointerSize)) {
           continue;
         }
 

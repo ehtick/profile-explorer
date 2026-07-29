@@ -143,6 +143,40 @@ public class SampleAggregatorTests {
   }
 
   [TestMethod]
+  public void PointerSize_DerivedFromRegisteredImages() {
+    var r64 = new IpResolver();
+    r64.AddImage("ntdll.dll", 0x7FF800000000, 0x100000); // above 4 GB => 64-bit trace
+    Assert.AreEqual(8, r64.PointerSize);
+
+    var r32 = new IpResolver();
+    r32.AddImage("app32.exe", 0x00400000, 0x10000); // everything below 4 GB => 32-bit trace
+    Assert.AreEqual(4, r32.PointerSize);
+
+    Assert.AreEqual(8, new IpResolver().PointerSize, "defaults to 64-bit when no images are registered");
+  }
+
+  [TestMethod]
+  public void KernelImageless_32BitTrace_DroppedNotBucketed() {
+    // Only a below-4 GB image is registered, so the resolver derives a 32-bit pointer size (4) where
+    // the kernel split is 0x80000000 (not the 64-bit 0xFFFF... threshold). A 32-bit kernel imageless
+    // leaf must be dropped, NOT bucketed into "(unknown)" and counted (the reviewed hard-coded-8 bug).
+    var resolver = new IpResolver();
+    resolver.AddImage("app32.exe", 0x00400000, 0x10000);
+    Assert.AreEqual(4, resolver.PointerSize);
+
+    var aggregator = new SampleAggregator(resolver);
+    var samples = new List<IProfileSample> {
+      new SyntheticSample(0x81234567, TimeSpan.FromMilliseconds(1), 1, 1, null, 0) // 32-bit kernel addr
+    };
+
+    aggregator.AddSamples(samples);
+    var profiles = aggregator.Build();
+
+    Assert.AreEqual(0, profiles.Count, "32-bit kernel imageless leaf should be dropped");
+    Assert.AreEqual(0.0, aggregator.TotalWeight.TotalMilliseconds, 0.01, "must not count toward the total");
+  }
+
+  [TestMethod]
   public void PercentCalculation_RelativeToTotalWeight() {
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
