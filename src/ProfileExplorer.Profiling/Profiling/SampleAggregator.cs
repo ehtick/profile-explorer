@@ -23,6 +23,11 @@ internal class SampleAggregator {
   // own) so recursive functions are credited inclusive time once per stack without per-call alloc.
   [ThreadStatic] private static HashSet<ProfileFunctionId>? resolvedCredited_;
 
+  // Single synthetic bucket for user-space imageless (JITted/unmapped) leaf samples, mirroring Core's
+  // "[Unknown Module]" so their CPU time is counted in the total (denominator) and surfaced as one
+  // line, rather than silently dropped (which would inflate every resolved function's percentage).
+  private static readonly ProfileFunctionId UnknownFunctionId = new("[Unknown Module]", "(unknown)");
+
   public SampleAggregator(IpResolver ipResolver) {
     ipResolver_ = ipResolver;
   }
@@ -40,14 +45,42 @@ internal class SampleAggregator {
     var creditedThisStack = new HashSet<ProfileFunctionId>();
 
     foreach (var sample in samples) {
-      if (string.IsNullOrEmpty(sample.ImageName)) continue;
-
       // Call-tree instance filter: include only samples whose stack (read from the root) begins with
       // the instance path. Matches Core FunctionProfileProcessor's instance-path prefix filtering.
+      // This is the ONLY filter that removes a sample from the total denominator.
       if (instancePath is { Count: > 0 } &&
           !ipResolver_.StackHasInstancePrefix(sample.StackFrames, instancePath)) {
         continue;
       }
+
+      // A sample whose leaf IP is outside every loaded module (imageless — e.g. JITted/unmapped code).
+      // Match Core (ETWProfileDataProvider.ProcessUnresolvedStackAsync):
+      //   * kernel-space imageless leaf => dropped (Core adds a null frame, credited to no function);
+      //   * user-space imageless leaf   => credited to a single synthetic "(unknown)" bucket, so the
+      //     CPU time is counted in the total (denominator) and surfaced instead of hidden. (Core keys
+      //     this per-thread to keep its call tree from self-recursing; the flat report needs only one
+      //     bucket to reproduce Core's Sum(ExclusiveWeight) total.)
+      if (string.IsNullOrEmpty(sample.ImageName)) {
+        if (ProfileAddress.IsKernelAddress((ulong)sample.InstructionPointer, pointerSize: 8)) {
+          continue;
+        }
+
+        batchWeight += sample.Weight;
+        var unknown = functions_.GetOrAdd(UnknownFunctionId, static _ => new FunctionProfileData());
+
+        lock (unknown) {
+          unknown.ExclusiveWeight += sample.Weight;
+          unknown.Weight += sample.Weight;
+        }
+
+        continue;
+      }
+
+      // A sample whose leaf lies in a KNOWN image but resolves to no function still counts toward the
+      // total denominator: Core creates a hex-named placeholder function for such an address, so its
+      // self weight is included in Sum(ExclusiveWeight). Dropping it from the denominator would inflate
+      // every resolved function's percentage. It is counted here but attributed to no named function.
+      batchWeight += sample.Weight;
 
       var resolved = ipResolver_.Resolve(sample.InstructionPointer);
       if (resolved == null) continue;
@@ -63,8 +96,6 @@ internal class SampleAggregator {
         leaf.Weight += sample.Weight;
         leaf.AddInstructionSample(resolved.InstructionOffset, sample.Weight);
       }
-
-      batchWeight += sample.Weight;
 
       // Caller frames contribute inclusive weight plus a per-instruction sample at the call-site
       // (the return address offset within the caller). This mirrors Core's

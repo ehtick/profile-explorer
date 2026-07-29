@@ -106,9 +106,11 @@ public class SampleAggregatorTests {
   }
 
   [TestMethod]
-  public void SamplesWithNoImage_SkippedGracefully() {
+  public void UserImagelessSample_BucketedToUnknown() {
     var resolver = new IpResolver();
     var aggregator = new SampleAggregator(resolver);
+    // User-space leaf IP (below the kernel threshold) with no image: Core credits these to a synthetic
+    // "[Unknown Module]" so the CPU time is counted; the library mirrors that with a single bucket.
     var samples = new List<IProfileSample> {
       new SyntheticSample(0x1000, TimeSpan.FromMilliseconds(1), 1, 1, null, 0)
     };
@@ -116,7 +118,28 @@ public class SampleAggregatorTests {
     aggregator.AddSamples(samples);
     var profiles = aggregator.Build();
 
-    Assert.AreEqual(0, profiles.Count);
+    Assert.AreEqual(1, profiles.Count, "user-space imageless sample should be bucketed, not dropped");
+    Assert.AreEqual("(unknown)", profiles.First().Key.FunctionName);
+    Assert.AreEqual(1.0, profiles.First().Value.ExclusiveWeight.TotalMilliseconds, 0.01);
+    Assert.AreEqual(1.0, aggregator.TotalWeight.TotalMilliseconds, 0.01,
+                    "imageless user CPU must count toward the total denominator");
+  }
+
+  [TestMethod]
+  public void KernelImagelessSample_Dropped() {
+    var resolver = new IpResolver();
+    var aggregator = new SampleAggregator(resolver);
+    // Kernel-space leaf IP with no image: Core adds a null frame (credited to no function), so the
+    // library drops it — it must NOT count toward the total.
+    var samples = new List<IProfileSample> {
+      new SyntheticSample(unchecked((long)0xFFFF800000001000), TimeSpan.FromMilliseconds(1), 1, 1, null, 0)
+    };
+
+    aggregator.AddSamples(samples);
+    var profiles = aggregator.Build();
+
+    Assert.AreEqual(0, profiles.Count, "kernel-space imageless sample should be dropped");
+    Assert.AreEqual(0.0, aggregator.TotalWeight.TotalMilliseconds, 0.01, "must not count toward the total");
   }
 
   [TestMethod]
