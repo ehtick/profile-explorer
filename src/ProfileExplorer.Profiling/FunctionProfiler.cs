@@ -303,7 +303,10 @@ public class FunctionProfiler : IDisposable {
           debugInfoByModule_[moduleName] = provider;
           var sortedFunctions = provider.GetSortedFunctions();
           if (sortedFunctions.Count > 0) {
-            ipResolver_.SetFunctions(moduleName, sortedFunctions);
+            // Pass the provider too so the resolver can fall back to its DIA-backed RVA lookup for
+            // PGO-split function chunks the contiguous list omits (matches Core, which credits their
+            // inclusive time to the parent function).
+            ipResolver_.SetFunctions(moduleName, sortedFunctions, provider);
           }
           else {
             Log($"PDB loaded but 0 functions: {moduleName} ({pdbPath})");

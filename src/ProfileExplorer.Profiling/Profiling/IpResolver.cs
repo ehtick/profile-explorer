@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using System.Collections.Concurrent;
 using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Core.Profile;
 using ProfileExplorer.Profiling.Symbols;
@@ -12,7 +13,18 @@ namespace ProfileExplorer.Profiling.Profiling;
 /// </summary>
 internal class IpResolver {
   private readonly SortedList<long, ImageInfo> imagesByBaseAddress_ = [];
-  private readonly Dictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly ConcurrentDictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  // Per-module debug-info provider paired with its own RVA cache. The provider has a DIA fallback that
+  // resolves PGO-split function chunks the contiguous list omits; the cache memoizes results so a
+  // repeated return address doesn't re-query DIA. Both live in one entry so "provider present" always
+  // implies "cache present" (no parallel-map invariant to violate), and it's a ConcurrentDictionary so
+  // reads are lock-free and robust even if registration ever overlaps resolution on worker threads.
+  private readonly record struct ModuleResolver(
+    ISymbolDebugInfo Provider,
+    ConcurrentDictionary<long, FunctionDebugInfo?> Cache);
+
+  private readonly ConcurrentDictionary<string, ModuleResolver> resolversByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly object fallbackLock_ = new();
   private readonly ManagedMethodResolver? managedResolver_;
 
   public IpResolver(ManagedMethodResolver? managedResolver = null) {
@@ -27,10 +39,42 @@ internal class IpResolver {
   }
 
   /// <summary>
-  /// Register sorted function debug info for a module.
+  /// Register sorted function debug info for a module. Optionally register the debug-info provider so
+  /// that RVAs the contiguous sorted list doesn't cover (PGO-split function chunks) can be resolved
+  /// via the provider's DIA-backed <see cref="ISymbolDebugInfo.FindFunctionByRVA"/> — matching Core,
+  /// which resolves those chunks and so credits inclusive time to the split function's parent.
   /// </summary>
-  public void SetFunctions(string moduleName, List<FunctionDebugInfo> sortedFunctions) {
+  public void SetFunctions(string moduleName, List<FunctionDebugInfo> sortedFunctions,
+                           ISymbolDebugInfo? debugInfo = null) {
     sortedFunctionsByModule_[moduleName] = sortedFunctions;
+
+    if (debugInfo != null) {
+      resolversByModule_[moduleName] = new ModuleResolver(debugInfo, new ConcurrentDictionary<long, FunctionDebugInfo?>());
+    }
+  }
+
+  // Resolve an RVA through the provider (overlapping-aware BinarySearch + DIA fallback for PGO-split
+  // chunks), memoizing per module+RVA so the same return address isn't queried repeatedly. Returns
+  // whatever provider.FindFunctionByRVA returns (null on a genuine miss), matching Core's
+  // ProfileModuleBuilder.GetOrCreateFunction, which uses the result as-is — it does NOT drop
+  // empty-named hits, so we don't either. The cache read is lock-free (ConcurrentDictionary), so the
+  // warm path — a return address already resolved — never contends even though Resolve runs on
+  // parallel worker threads. Only a cold miss takes fallbackLock_: DIA (COM) is not thread-safe, and
+  // provider.FindFunctionByRVA touches DIA for the rare split-chunk case (Core calls it unlocked; we
+  // guard it), so contention is limited to genuinely new addresses.
+  private FunctionDebugInfo? ResolveViaProvider(in ModuleResolver resolver, long moduleRva) {
+    if (resolver.Cache.TryGetValue(moduleRva, out var cached)) return cached; // lock-free warm path
+
+    FunctionDebugInfo? func;
+    lock (fallbackLock_) {
+      // Re-check under the lock so concurrent misses on the same RVA query DIA only once.
+      if (resolver.Cache.TryGetValue(moduleRva, out var raced)) return raced;
+
+      func = resolver.Provider.FindFunctionByRVA(moduleRva);
+      resolver.Cache[moduleRva] = func;
+    }
+
+    return func;
   }
 
   /// <summary>
@@ -56,7 +100,14 @@ internal class IpResolver {
 
     // Find the function within the module.
     if (sortedFunctionsByModule_.TryGetValue(image.Name, out var functions)) {
-      var func = FunctionDebugInfo.BinarySearch(functions, moduleRva);
+      // When the module's debug-info provider is registered, resolve through its overlapping-aware +
+      // DIA-backed lookup (matches Core). The plain contiguous BinarySearch returns the wrong function
+      // for overlapping/nested symbols (e.g. an assembly label nested inside a larger function)
+      // and misses PGO-split chunks entirely, so split functions lose their inclusive time.
+      var func = resolversByModule_.TryGetValue(image.Name, out var resolver)
+        ? ResolveViaProvider(resolver, moduleRva)
+        : FunctionDebugInfo.BinarySearch(functions, moduleRva);
+
       if (func != null) {
         return new ResolvedIp(image.Name, func.RVA, func.Name, ip, func,
           moduleRva - func.RVA,
