@@ -156,6 +156,21 @@ public class SampleAggregatorTests {
   }
 
   [TestMethod]
+  public void PointerSize_ExplicitSet_WinsOverImageDerivation() {
+    // The host (FUN AI) sets the authoritative trace pointer size; it must win over the image-base
+    // derivation and survive later AddImage calls.
+    var resolver = new IpResolver { PointerSize = 4 };
+    Assert.AreEqual(4, resolver.PointerSize);
+
+    resolver.AddImage("ntdll.dll", 0x7FF800000000, 0x100000); // above 4 GB would derive 8...
+    Assert.AreEqual(4, resolver.PointerSize, "explicit value wins and survives AddImage");
+
+    // Clearing it (0) falls back to derivation from the registered images (now 64-bit).
+    resolver.PointerSize = 0;
+    Assert.AreEqual(8, resolver.PointerSize, "0 reverts to image-base derivation");
+  }
+
+  [TestMethod]
   public void KernelImageless_32BitTrace_DroppedNotBucketed() {
     // Only a below-4 GB image is registered, so the resolver derives a 32-bit pointer size (4) where
     // the kernel split is 0x80000000 (not the 64-bit 0xFFFF... threshold). A 32-bit kernel imageless

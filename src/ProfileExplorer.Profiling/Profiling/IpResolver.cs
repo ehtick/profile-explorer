@@ -27,9 +27,11 @@ internal class IpResolver {
   private readonly object fallbackLock_ = new();
   private readonly ManagedMethodResolver? managedResolver_;
 
-  // Cached OS pointer size (bytes) derived from the registered image address space; 0 = not yet
-  // computed. Invalidated whenever an image is added.
-  private int pointerSize_;
+  // OS pointer size (bytes). The host sets PointerSize from the trace's authoritative metadata (ETW
+  // SystemConfigCPU / TraceInfo.PointerSize) and that value wins. When the host leaves it unset it is
+  // derived from the registered image address space as a fallback (cached; invalidated on AddImage).
+  private int explicitPointerSize_; // caller-supplied; 0 = not set, fall back to derivation
+  private int derivedPointerSize_;  // cached image-base derivation; 0 = recompute
 
   public IpResolver(ManagedMethodResolver? managedResolver = null) {
     managedResolver_ = managedResolver;
@@ -40,19 +42,25 @@ internal class IpResolver {
   /// </summary>
   public void AddImage(string imageName, long baseAddress, int size) {
     imagesByBaseAddress_[baseAddress] = new ImageInfo(imageName, baseAddress, size);
-    pointerSize_ = 0; // Invalidate the derived pointer size; recomputed on next query.
+    derivedPointerSize_ = 0; // Invalidate the derived fallback; recomputed on next query.
   }
 
   /// <summary>
-  /// OS pointer size (bytes) for this trace, derived from the registered image address space: a 64-bit
-  /// trace always loads at least one image above 4 GB (ntdll, the kernel, ASLR'd modules), whereas a
-  /// 32-bit-OS trace keeps everything below 4 GB. Lets callers pick the correct kernel/user address
-  /// split (<see cref="ProfileAddress.IsKernelAddress"/>) without plumbing the value through. Defaults
-  /// to 8 (64-bit) when no images are registered. Cached; recomputed after <see cref="AddImage"/>.
+  /// OS pointer size (bytes) used to pick the correct kernel/user address split
+  /// (<see cref="ProfileAddress.IsKernelAddress"/>). Prefer setting this from the trace's authoritative
+  /// value — ETW <c>SystemConfigCPU</c> / <c>TraceInfo.PointerSize</c>, as Profile Explorer's main path
+  /// does; a caller-set value always wins and survives later <see cref="AddImage"/> calls. When the host
+  /// does not set it, it is derived from the registered image address space as a fallback: a 64-bit trace
+  /// always loads at least one image above 4 GB (ntdll, the kernel, ASLR'd modules), whereas a 32-bit-OS
+  /// trace keeps everything below 4 GB (default 8 when no images are registered).
   /// </summary>
   public int PointerSize {
     get {
-      if (pointerSize_ == 0) {
+      if (explicitPointerSize_ != 0) {
+        return explicitPointerSize_;
+      }
+
+      if (derivedPointerSize_ == 0) {
         bool any64 = false;
 
         foreach (long baseAddress in imagesByBaseAddress_.Keys) {
@@ -62,11 +70,12 @@ internal class IpResolver {
           }
         }
 
-        pointerSize_ = any64 || imagesByBaseAddress_.Count == 0 ? 8 : 4;
+        derivedPointerSize_ = any64 || imagesByBaseAddress_.Count == 0 ? 8 : 4;
       }
 
-      return pointerSize_;
+      return derivedPointerSize_;
     }
+    set => explicitPointerSize_ = value;
   }
 
   /// <summary>
