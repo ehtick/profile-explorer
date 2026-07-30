@@ -16,6 +16,7 @@ using ProfileExplorer.Core.Binary;
 using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Core.Settings;
 using ProfileExplorer.Core.Utilities;
+using ProfileExplorer.Profiling;
 
 namespace ProfileExplorer.Core.Profile.ETW;
 
@@ -68,13 +69,11 @@ public sealed partial class ETWEventProcessor : IDisposable {
     source_ = null;
   }
 
-  public static bool IsKernelAddress(ulong ip, int pointerSize) {
-    if (pointerSize == 4) {
-      return ip >= 0x80000000;
-    }
-
-    return ip >= 0xFFFF000000000000;
-  }
+  // Kernel/user address split. Forwards to the single shared implementation in the profiling library
+  // (ProfileAddress) so the threshold is defined in exactly one place; kept here as a thin forwarder
+  // for this type's existing callers.
+  public static bool IsKernelAddress(ulong ip, int pointerSize) =>
+    ProfileAddress.IsKernelAddress(ip, pointerSize);
 
   private unsafe static string ReadWideString(ReadOnlySpan<byte> data, int offset = 0) {
     fixed (byte* dataPtr = data) {

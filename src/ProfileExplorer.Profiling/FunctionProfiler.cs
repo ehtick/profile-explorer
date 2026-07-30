@@ -98,6 +98,19 @@ public class FunctionProfiler : IDisposable {
   }
 
   /// <summary>
+  /// OS pointer size in bytes (8 = 64-bit, 4 = 32-bit) for the trace being profiled, used to classify
+  /// kernel vs. user instruction pointers for imageless (JITted/unmapped) leaf samples. Set this from
+  /// the trace's authoritative metadata (e.g. TraceEvent's <c>ETWTraceEventSource.PointerSize</c>, which
+  /// mirrors the ETW <c>SystemConfigCPU</c> value Profile Explorer's main path reads) BEFORE calling
+  /// <see cref="AddSamples"/>. When left unset, it is derived from the registered image address space.
+  /// Reading returns the effective value (the explicit override if set, otherwise the derived one).
+  /// </summary>
+  public int PointerSize {
+    get => ipResolver_.PointerSize;
+    set => ipResolver_.PointerSize = value;
+  }
+
+  /// <summary>
   /// Register pre-resolved, RVA-sorted function debug info for a module, bypassing the profiler's
   /// own PDB download and reading. Use this when the host has already acquired and read the module's
   /// symbols (e.g. Profile Explorer, which owns symbol acquisition via TraceEvent): the engine then

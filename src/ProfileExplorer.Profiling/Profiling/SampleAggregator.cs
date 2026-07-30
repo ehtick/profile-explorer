@@ -23,6 +23,11 @@ internal class SampleAggregator {
   // own) so recursive functions are credited inclusive time once per stack without per-call alloc.
   [ThreadStatic] private static HashSet<ProfileFunctionId>? resolvedCredited_;
 
+  // Single synthetic bucket for user-space imageless (JITted/unmapped) leaf samples, mirroring Core's
+  // "[Unknown Module]" so their CPU time is counted in the total (denominator) and surfaced as one
+  // line, rather than silently dropped (which would inflate every resolved function's percentage).
+  private static readonly ProfileFunctionId UnknownFunctionId = new("[Unknown Module]", "(unknown)");
+
   public SampleAggregator(IpResolver ipResolver) {
     ipResolver_ = ipResolver;
   }
@@ -40,37 +45,72 @@ internal class SampleAggregator {
     var creditedThisStack = new HashSet<ProfileFunctionId>();
 
     foreach (var sample in samples) {
-      if (string.IsNullOrEmpty(sample.ImageName)) continue;
-
       // Call-tree instance filter: include only samples whose stack (read from the root) begins with
       // the instance path. Matches Core FunctionProfileProcessor's instance-path prefix filtering.
+      // This is the ONLY filter that removes a sample from the total denominator.
       if (instancePath is { Count: > 0 } &&
           !ipResolver_.StackHasInstancePrefix(sample.StackFrames, instancePath)) {
         continue;
       }
 
-      var resolved = ipResolver_.Resolve(sample.InstructionPointer);
-      if (resolved == null) continue;
-
+      // Leaf-frame handling. This decides ONLY the leaf's exclusive-weight credit and whether the
+      // sample counts toward the total denominator; the caller frames below are ALWAYS walked for
+      // inclusive weight, matching Core (ETWProfileDataProvider.ProcessUnresolvedStackAsync), which
+      // resolves the leaf into a frame (real, synthetic, or null) and then keeps walking the rest of
+      // the stack. A leaf-first stack has the leaf at index 0; the caller walk starts at index 1.
       creditedThisStack.Clear();
 
-      // Leaf frame: self (exclusive) + inclusive + per-instruction weight.
-      var leaf = GetOrAddFunction(resolved, out var leafId);
-      creditedThisStack.Add(leafId);
+      if (string.IsNullOrEmpty(sample.ImageName)) {
+        // Imageless leaf (JITted/unmapped). Mirror Core:
+        //   * kernel-space => a null frame: no function, no exclusive weight, excluded from the total;
+        //   * user-space   => a single synthetic "(unknown)" bucket credited exclusive + inclusive, so
+        //     its CPU time is counted in the total (denominator) and surfaced instead of hidden. (Core
+        //     keys this per-thread to keep its call tree from self-recursing; the flat report needs only
+        //     one bucket to reproduce Core's Sum(ExclusiveWeight) total.)
+        // EITHER WAY the resolved caller frames further down the stack still receive inclusive weight,
+        // credited by the shared caller walk below.
+        if (!ProfileAddress.IsKernelAddress((ulong)sample.InstructionPointer, ipResolver_.PointerSize)) {
+          batchWeight += sample.Weight;
+          var unknown = functions_.GetOrAdd(UnknownFunctionId, static _ => new FunctionProfileData());
 
-      lock (leaf) {
-        leaf.ExclusiveWeight += sample.Weight;
-        leaf.Weight += sample.Weight;
-        leaf.AddInstructionSample(resolved.InstructionOffset, sample.Weight);
+          lock (unknown) {
+            unknown.ExclusiveWeight += sample.Weight;
+            unknown.Weight += sample.Weight;
+          }
+
+          creditedThisStack.Add(UnknownFunctionId); // leaf already credited inclusive; don't re-credit
+        }
       }
+      else {
+        // Has-image leaf. Counts toward the total denominator even when it resolves to no function:
+        // Core creates a hex-named placeholder for such an address, so its self weight is included in
+        // Sum(ExclusiveWeight). Dropping it from the denominator would inflate every resolved
+        // function's percentage. When unresolved it is credited to no named function, but the caller
+        // walk below still runs (Core places the placeholder frame and keeps walking the stack).
+        batchWeight += sample.Weight;
 
-      batchWeight += sample.Weight;
+        var resolved = ipResolver_.Resolve(sample.InstructionPointer);
+
+        if (resolved != null) {
+          // Leaf frame: self (exclusive) + inclusive + per-instruction weight.
+          var leaf = GetOrAddFunction(resolved, out var leafId);
+          creditedThisStack.Add(leafId);
+
+          lock (leaf) {
+            leaf.ExclusiveWeight += sample.Weight;
+            leaf.Weight += sample.Weight;
+            leaf.AddInstructionSample(resolved.InstructionOffset, sample.Weight);
+          }
+        }
+      }
 
       // Caller frames contribute inclusive weight plus a per-instruction sample at the call-site
       // (the return address offset within the caller). This mirrors Core's
       // FunctionProfileProcessor.ProcessSample, which credits AddInstructionSample for every unique
       // function on the stack — so a `call` instruction shows the inclusive time of what it invoked.
-      // Stack is leaf-first; skip index 0 (leaf — already counted above).
+      // Runs for EVERY passed-filter sample regardless of how the leaf resolved, so resolved callers
+      // above an imageless/unresolved leaf are still credited (Core always walks the whole stack).
+      // Stack is leaf-first; skip index 0 (the leaf, handled above).
       if (sample.StackFrames is { Count: > 1 }) {
         for (int i = 1; i < sample.StackFrames.Count; i++) {
           var callerResolved = ipResolver_.Resolve(sample.StackFrames[i]);
