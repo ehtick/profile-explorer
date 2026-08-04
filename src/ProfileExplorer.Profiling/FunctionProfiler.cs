@@ -33,6 +33,10 @@ public class FunctionProfiler : IDisposable {
 
   private ProfileReport? cachedReport_;
   private bool symbolsLoaded_;
+  // Modules whose symbol load has already been attempted, so a later (filtered or full) load skips
+  // them instead of re-probing. This lets a filtered LoadSymbolsForSamplesAsync be followed by a full
+  // LoadSymbolsAsync that still loads the remaining, previously-unfiltered modules.
+  private readonly HashSet<string> loadedModules_ = new(StringComparer.OrdinalIgnoreCase);
 
   public FunctionProfiler(ProfilerOptions options)
     : this(options, symbolResolver: null) {
@@ -305,8 +309,10 @@ public class FunctionProfiler : IDisposable {
 
     foreach (var (moduleName, image) in imagesByModule_) {
       if (moduleFilter != null && !moduleFilter.Contains(moduleName)) continue;
+      if (loadedModules_.Contains(moduleName)) continue; // Already attempted by an earlier load.
       if (image.PdbGuid == Guid.Empty) continue;
 
+      loadedModules_.Add(moduleName); // Mark attempted regardless of outcome so no module is re-probed.
       try {
         string pdbName = !string.IsNullOrEmpty(image.PdbName)
           ? Path.GetFileName(image.PdbName)
@@ -348,7 +354,12 @@ public class FunctionProfiler : IDisposable {
       }
     }
 
-    symbolsLoaded_ = true;
+    // Only a full (unfiltered) load has attempted every module; a filtered load must NOT suppress a
+    // later full LoadSymbolsAsync that still needs the remaining, previously-skipped modules.
+    if (moduleFilter == null) {
+      symbolsLoaded_ = true;
+    }
+
     InvalidateReport();
   }
 
@@ -504,15 +515,28 @@ public class FunctionProfiler : IDisposable {
 
       try {
         var info = PEBinaryInfoProvider.GetBinaryFileInfo(candidate);
+        if (info == null) {
+          continue;
+        }
 
-        if (info != null && info.TimeStamp == image.TimeDateStamp) {
-          Log($"Using local on-disk binary for {image.ImageName}: {candidate} (TimeDateStamp {info.TimeStamp:X8} matches trace)");
+        // Trust the local file only when it matches the same identity the symbol server keys on —
+        // TimeDateStamp + SizeOfImage — plus the module file name, so a stray local PE that merely
+        // shares a timestamp (image.ImagePath comes from trace data) is never disassembled by mistake.
+        bool stampMatches = info.TimeStamp == image.TimeDateStamp;
+        bool sizeMatches = image.Size <= 0 || info.ImageSize == image.Size;
+        bool nameMatches = string.IsNullOrEmpty(image.ImageName) ||
+          string.Equals(Path.GetFileName(candidate), Path.GetFileName(image.ImageName),
+                        StringComparison.OrdinalIgnoreCase);
+
+        if (stampMatches && sizeMatches && nameMatches) {
+          Log($"Using local on-disk binary for {image.ImageName}: {candidate} " +
+              $"(TimeDateStamp {info.TimeStamp:X8}, SizeOfImage {info.ImageSize:X} match trace)");
           return candidate;
         }
 
-        if (info != null) {
-          Log($"Local {image.ImageName} at {candidate} rejected: TimeDateStamp {info.TimeStamp:X8} != trace {image.TimeDateStamp:X8} (wrong build)");
-        }
+        Log($"Local {image.ImageName} at {candidate} rejected: TimeDateStamp {info.TimeStamp:X8} vs trace " +
+            $"{image.TimeDateStamp:X8}, SizeOfImage {info.ImageSize:X} vs trace {image.Size:X}, " +
+            $"nameMatch={nameMatches} (wrong build/binary)");
       }
       catch (Exception ex) {
         Log($"Local binary probe failed for {image.ImageName} at {candidate}: {ex.GetType().Name}: {ex.Message}");

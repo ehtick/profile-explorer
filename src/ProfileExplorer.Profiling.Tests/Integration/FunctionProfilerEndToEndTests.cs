@@ -216,8 +216,8 @@ public class FunctionProfilerEndToEndTests {
   public async Task LocalBinaryFallback_UsesLocalDll_WhenTimeDateStampMatches() {
     if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }
 
-    var (funcId, profile, dllTimeStamp) = BuildLocalBinaryScenario();
-    if (profile == null) { Assert.Inconclusive("Could not build a function profile."); return; }
+    var (funcId, profile, dllTimeStamp, dllImageSize) = BuildLocalBinaryScenario();
+    if (profile == null) { Assert.Inconclusive("Could not build a function profile (or read the on-disk DLL)."); return; }
 
     var options = new ProfilerOptions {
       SymbolPaths = new[] { "srv*https://symbols.invalid" },
@@ -226,7 +226,7 @@ public class FunctionProfilerEndToEndTests {
     };
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
     profiler.AddImages(new IProfileImage[] {
-      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000,
+      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, dllImageSize,
         dllTimeStamp, Guid.Empty, 0, TestDataHelper.MsoPdbFile, 1, imagePath: DllPath)
     });
 
@@ -248,8 +248,8 @@ public class FunctionProfilerEndToEndTests {
   public async Task LocalBinaryFallback_IgnoresLocalDll_WhenTimeDateStampMismatches() {
     if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }
 
-    var (funcId, profile, dllTimeStamp) = BuildLocalBinaryScenario();
-    if (profile == null) { Assert.Inconclusive("Could not build a function profile."); return; }
+    var (funcId, profile, dllTimeStamp, dllImageSize) = BuildLocalBinaryScenario();
+    if (profile == null) { Assert.Inconclusive("Could not build a function profile (or read the on-disk DLL)."); return; }
 
     var options = new ProfilerOptions {
       SymbolPaths = new[] { "srv*https://symbols.invalid" },
@@ -260,7 +260,7 @@ public class FunctionProfilerEndToEndTests {
     // Deliberately wrong TimeDateStamp -> the local DLL must be rejected (wrong build).
     int wrongTimeStamp = unchecked(dllTimeStamp + 1);
     profiler.AddImages(new IProfileImage[] {
-      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000,
+      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, dllImageSize,
         wrongTimeStamp, Guid.Empty, 0, TestDataHelper.MsoPdbFile, 1, imagePath: DllPath)
     });
 
@@ -278,14 +278,15 @@ public class FunctionProfilerEndToEndTests {
 
   // Build a single-function profile (with InstructionWeight) plus the on-disk DLL's real PE
   // TimeDateStamp, for exercising the local-binary path in GetAnnotatedAssemblyAsync.
-  private static (ProfileFunctionId FuncId, FunctionProfileData? Profile, int DllTimeStamp) BuildLocalBinaryScenario() {
+  private static (ProfileFunctionId FuncId, FunctionProfileData? Profile, int DllTimeStamp, int DllImageSize)
+      BuildLocalBinaryScenario() {
     using var pdbProvider = new PdbSymbolProvider();
-    if (!pdbProvider.LoadDebugInfo(PdbPath)) return (default, null, 0);
+    if (!pdbProvider.LoadDebugInfo(PdbPath)) return (default, null, 0, 0);
 
     var functions = pdbProvider.GetSortedFunctions();
     var target = TestDataHelper.GetUniqueRvaFunctions(pdbProvider)
       .FirstOrDefault(f => pdbProvider.FindFunctionByRVA(f.RVA)?.RVA == f.RVA && f.Size > 16);
-    if (target == null) return (default, null, 0);
+    if (target == null) return (default, null, 0, 0);
 
     var ipResolver = new Profiling.IpResolver();
     ipResolver.AddImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000);
@@ -302,8 +303,16 @@ public class FunctionProfilerEndToEndTests {
 
     var profiles = aggregator.Build();
     var profile = profiles.FirstOrDefault(p => p.Key.FunctionName == target.Name);
+
+    // The local-binary fallback is gated on the on-disk DLL's real PE identity (TimeDateStamp +
+    // SizeOfImage). If the DLL can't be read we can't set up a meaningful match/mismatch, so mark the
+    // scenario inconclusive (null profile) rather than fabricating a 0 stamp that would make the match
+    // test spuriously fail.
     var dllInfo = PEBinaryInfoProvider.GetBinaryFileInfo(DllPath);
-    return (new ProfileFunctionId(TestDataHelper.MsoModuleName, target.Name), profile.Value, dllInfo?.TimeStamp ?? 0);
+    if (dllInfo == null) return (default, null, 0, 0);
+
+    return (new ProfileFunctionId(TestDataHelper.MsoModuleName, target.Name), profile.Value,
+            dllInfo.TimeStamp, (int)dllInfo.ImageSize);
   }
 
   /// <summary>Symbol locator that never resolves — forces the local-binary path to be the only source.</summary>
