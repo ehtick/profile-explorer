@@ -226,6 +226,38 @@ internal class IpResolver {
 
     return best;
   }
+
+  /// <summary>
+  /// Collect the set of module names that the given samples actually touch — the leaf instruction
+  /// pointer plus every stack frame — so a caller can load symbols ONLY for sampled modules instead
+  /// of every loaded image. Cheap: an in-memory binary search per frame over the registered image
+  /// ranges (no PDBs, no I/O). Modules never touched by a sample never need their symbols.
+  /// </summary>
+  public HashSet<string> CollectTouchedModules(IReadOnlyList<IProfileSample> samples) {
+    var touched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var sample in samples) {
+      if (!string.IsNullOrEmpty(sample.ImageName)) {
+        touched.Add(sample.ImageName);
+      }
+
+      var leaf = FindImage(sample.InstructionPointer);
+      if (leaf != null) {
+        touched.Add(leaf.Name);
+      }
+
+      if (sample.StackFrames != null) {
+        foreach (long ip in sample.StackFrames) {
+          var image = FindImage(ip);
+          if (image != null) {
+            touched.Add(image.Name);
+          }
+        }
+      }
+    }
+
+    return touched;
+  }
 }
 
 /// <summary>

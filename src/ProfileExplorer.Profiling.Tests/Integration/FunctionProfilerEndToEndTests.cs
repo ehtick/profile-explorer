@@ -4,6 +4,8 @@ using System.Reflection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ProfileExplorer.Profiling.Disassembly;
 using ProfileExplorer.Core.Binary;
+using ProfileExplorer.Core.Profile;
+using ProfileExplorer.Core.Profile.Data;
 using ProfileExplorer.Profiling.Symbols;
 using ProfileExplorer.Profiling.Tests.Helpers;
 
@@ -201,11 +203,124 @@ public class FunctionProfilerEndToEndTests {
     Assert.AreEqual(30.0, p1.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
     Assert.AreEqual(70.0, p2.Value.ExclusiveWeight.TotalMilliseconds / total * 100, 0.1);
   }
+
+  /// <summary>
+  /// Local-binary fallback (private-binary parity with the old MCP engine): when the symbol server
+  /// can't provide the binary (NoSymbolLocator returns null) but the traced image's ImagePath points
+  /// to a local on-disk DLL whose PE TimeDateStamp MATCHES the trace's image record,
+  /// GetAnnotatedAssemblyAsync must disassemble from that local file. Mirrors
+  /// ProfileExplorerCore.BinaryFileLocator.FindExactLocalBinaryFile so DataLayer can disassemble
+  /// private OS binaries (not on the public symbol server) from the local install.
+  /// </summary>
+  [TestMethod]
+  public async Task LocalBinaryFallback_UsesLocalDll_WhenTimeDateStampMatches() {
+    if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }
+
+    var (funcId, profile, dllTimeStamp) = BuildLocalBinaryScenario();
+    if (profile == null) { Assert.Inconclusive("Could not build a function profile."); return; }
+
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      MinHotLinePercent = 0.0,
+      MaxHotLines = 50
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+    profiler.AddImages(new IProfileImage[] {
+      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000,
+        dllTimeStamp, Guid.Empty, 0, TestDataHelper.MsoPdbFile, 1, imagePath: DllPath)
+    });
+
+    var annotated = await profiler.GetAnnotatedAssemblyAsync(funcId, profile);
+
+    Assert.IsNotNull(annotated,
+      "Should disassemble from the local binary even though the symbol server returns nothing.");
+    Assert.IsTrue(annotated!.Lines.Count > 0, "Should have real disassembled instruction lines.");
+    Assert.IsFalse(annotated.FullText.Contains("[offset +0x"),
+      "Real disassembly must NOT be the no-binary offset fallback.");
+  }
+
+  /// <summary>
+  /// The local-binary fallback is gated on a PE TimeDateStamp match so we never disassemble the wrong
+  /// build. When the local DLL's timestamp does NOT match the trace's image record, the local file is
+  /// ignored and (with the symbol server also empty) we fall back to offset-level hot lines.
+  /// </summary>
+  [TestMethod]
+  public async Task LocalBinaryFallback_IgnoresLocalDll_WhenTimeDateStampMismatches() {
+    if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }
+
+    var (funcId, profile, dllTimeStamp) = BuildLocalBinaryScenario();
+    if (profile == null) { Assert.Inconclusive("Could not build a function profile."); return; }
+
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      MinHotLinePercent = 0.0,
+      MaxHotLines = 50
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+    // Deliberately wrong TimeDateStamp -> the local DLL must be rejected (wrong build).
+    int wrongTimeStamp = unchecked(dllTimeStamp + 1);
+    profiler.AddImages(new IProfileImage[] {
+      new TestProfileImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000,
+        wrongTimeStamp, Guid.Empty, 0, TestDataHelper.MsoPdbFile, 1, imagePath: DllPath)
+    });
+
+    var annotated = await profiler.GetAnnotatedAssemblyAsync(funcId, profile);
+
+    // With no binary (local rejected + server empty) the only possible output is the offset fallback,
+    // never real disassembly.
+    if (annotated != null) {
+      Assert.IsTrue(annotated.FullText.Contains("[offset +0x"),
+        "A build mismatch must ignore the local binary, yielding the offset fallback (not real disassembly).");
+    }
+  }
+
+  private const long LocalBinaryModuleBase = 0x180000000;
+
+  // Build a single-function profile (with InstructionWeight) plus the on-disk DLL's real PE
+  // TimeDateStamp, for exercising the local-binary path in GetAnnotatedAssemblyAsync.
+  private static (ProfileFunctionId FuncId, FunctionProfileData? Profile, int DllTimeStamp) BuildLocalBinaryScenario() {
+    using var pdbProvider = new PdbSymbolProvider();
+    if (!pdbProvider.LoadDebugInfo(PdbPath)) return (default, null, 0);
+
+    var functions = pdbProvider.GetSortedFunctions();
+    var target = TestDataHelper.GetUniqueRvaFunctions(pdbProvider)
+      .FirstOrDefault(f => pdbProvider.FindFunctionByRVA(f.RVA)?.RVA == f.RVA && f.Size > 16);
+    if (target == null) return (default, null, 0);
+
+    var ipResolver = new Profiling.IpResolver();
+    ipResolver.AddImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000);
+    ipResolver.SetFunctions(TestDataHelper.MsoModuleName, functions);
+
+    var aggregator = new Profiling.SampleAggregator(ipResolver);
+    var samples = new List<IProfileSample>();
+    for (int i = 0; i < 20; i++) {
+      long ip = LocalBinaryModuleBase + target.RVA + (i * 4) % (int)target.Size;
+      samples.Add(new SyntheticSample(ip, TimeSpan.FromMilliseconds(1), 1, 1,
+        TestDataHelper.MsoModuleName, LocalBinaryModuleBase));
+    }
+    aggregator.AddSamples(samples);
+
+    var profiles = aggregator.Build();
+    var profile = profiles.FirstOrDefault(p => p.Key.FunctionName == target.Name);
+    var dllInfo = PEBinaryInfoProvider.GetBinaryFileInfo(DllPath);
+    return (new ProfileFunctionId(TestDataHelper.MsoModuleName, target.Name), profile.Value, dllInfo?.TimeStamp ?? 0);
+  }
+
+  /// <summary>Symbol locator that never resolves — forces the local-binary path to be the only source.</summary>
+  private sealed class NoSymbolLocator : ISymbolFileLocator {
+    public Task<string?> FindSymbolFileAsync(string pdbName, Guid guid, int age, CancellationToken ct = default) =>
+      Task.FromResult<string?>(null);
+
+    public Task<string?> FindBinaryFileAsync(string binaryName, int timeDateStamp, long imageSize,
+                                             CancellationToken ct = default) =>
+      Task.FromResult<string?>(null);
+  }
 }
 
 internal class TestProfileImage : IProfileImage {
   public TestProfileImage(string name, long baseAddr, int size, int timeStamp,
-                           Guid pdbGuid, int pdbAge, string pdbName, int processId) {
+                           Guid pdbGuid, int pdbAge, string pdbName, int processId,
+                           string? imagePath = null) {
     ImageName = name;
     BaseAddress = baseAddr;
     Size = size;
@@ -214,6 +329,7 @@ internal class TestProfileImage : IProfileImage {
     PdbAge = pdbAge;
     PdbName = pdbName;
     ProcessId = processId;
+    ImagePath = imagePath;
   }
 
   public string ImageName { get; }
@@ -224,4 +340,5 @@ internal class TestProfileImage : IProfileImage {
   public int PdbAge { get; }
   public string PdbName { get; }
   public int ProcessId { get; }
+  public string? ImagePath { get; }
 }

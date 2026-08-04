@@ -30,4 +30,12 @@ public interface IProfileImage {
 
   /// <summary>Process ID this image belongs to.</summary>
   int ProcessId { get; }
+
+  /// <summary>
+  /// Full on-disk path of the image as recorded in the trace (e.g., "C:\Windows\System32\ntdll.dll"
+  /// or an NT path like "\SystemRoot\System32\ntdll.dll"). Used to disassemble from the local binary
+  /// when the capturing machine's OS build matches this one. Optional — defaults to null for sources
+  /// (synthetic tests, adapters) that don't carry it.
+  /// </summary>
+  string? ImagePath => null;
 }
