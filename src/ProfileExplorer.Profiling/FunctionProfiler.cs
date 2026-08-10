@@ -33,6 +33,10 @@ public class FunctionProfiler : IDisposable {
 
   private ProfileReport? cachedReport_;
   private bool symbolsLoaded_;
+  // Modules whose symbol load has already been attempted, so a later (filtered or full) load skips
+  // them instead of re-probing. This lets a filtered LoadSymbolsForSamplesAsync be followed by a full
+  // LoadSymbolsAsync that still loads the remaining, previously-unfiltered modules.
+  private readonly HashSet<string> loadedModules_ = new(StringComparer.OrdinalIgnoreCase);
 
   public FunctionProfiler(ProfilerOptions options)
     : this(options, symbolResolver: null) {
@@ -288,12 +292,27 @@ public class FunctionProfiler : IDisposable {
   /// <summary>
   /// Load symbols for all registered images. Downloads PDBs from the symbol server.
   /// </summary>
-  public async Task LoadSymbolsAsync(CancellationToken ct = default) {
+  public Task LoadSymbolsAsync(CancellationToken ct = default) => LoadSymbolsCoreAsync(null, ct);
+
+  /// <summary>
+  /// Load symbols ONLY for the modules the given samples actually touch (leaf + stack frames),
+  /// skipping the PDB download/read for the (often thousands of) loaded-but-unsampled images. This is
+  /// correct for aggregation: a sample in a module whose symbols aren't loaded still resolves to
+  /// (module, RVA, null-function) and counts toward the total weight — only sampled modules need
+  /// symbols to attribute self/inclusive time to named functions. Call BEFORE <see cref="AddSamples"/>.
+  /// </summary>
+  public Task LoadSymbolsForSamplesAsync(IReadOnlyList<IProfileSample> samples, CancellationToken ct = default)
+    => LoadSymbolsCoreAsync(ipResolver_.CollectTouchedModules(samples), ct);
+
+  private async Task LoadSymbolsCoreAsync(IReadOnlySet<string>? moduleFilter, CancellationToken ct = default) {
     if (symbolsLoaded_) return;
 
     foreach (var (moduleName, image) in imagesByModule_) {
+      if (moduleFilter != null && !moduleFilter.Contains(moduleName)) continue;
+      if (loadedModules_.Contains(moduleName)) continue; // Already attempted by an earlier load.
       if (image.PdbGuid == Guid.Empty) continue;
 
+      loadedModules_.Add(moduleName); // Mark attempted regardless of outcome so no module is re-probed.
       try {
         string pdbName = !string.IsNullOrEmpty(image.PdbName)
           ? Path.GetFileName(image.PdbName)
@@ -335,7 +354,12 @@ public class FunctionProfiler : IDisposable {
       }
     }
 
-    symbolsLoaded_ = true;
+    // Only a full (unfiltered) load has attempted every module; a filtered load must NOT suppress a
+    // later full LoadSymbolsAsync that still needs the remaining, previously-skipped modules.
+    if (moduleFilter == null) {
+      symbolsLoaded_ = true;
+    }
+
     InvalidateReport();
   }
 
@@ -405,7 +429,14 @@ public class FunctionProfiler : IDisposable {
     // Download binary if not already cached.
     if (!binaryPathByModule_.TryGetValue(moduleName, out var binaryPath)) {
       if (imagesByModule_.TryGetValue(moduleName, out var image)) {
-        binaryPath = await symbolResolver_.FindBinaryFileAsync(
+        // Prefer the local on-disk binary when the capturing machine's OS build matches this one
+        // (e.g. a dev running the same Insider build the trace came from). This mirrors the old
+        // ProfileExplorerCore.BinaryFileLocator.FindExactLocalBinaryFile path and lets us disassemble
+        // private OS binaries that aren't published to the public symbol server. Gated on a PE
+        // TimeDateStamp match so we never disassemble the wrong build.
+        binaryPath = TryFindLocalBinary(image);
+
+        binaryPath ??= await symbolResolver_.FindBinaryFileAsync(
           image.ImageName, image.TimeDateStamp, image.Size, ct);
 
         if (binaryPath != null) {
@@ -470,6 +501,91 @@ public class FunctionProfiler : IDisposable {
 
   // Forward a diagnostic message to the consumer-provided sink (no-op when none is configured).
   private void Log(string message) => options_.LogCallback?.Invoke(message);
+
+  // Resolve the local on-disk binary for a traced image, but only trust it when its PE TimeDateStamp
+  // matches the trace's image record (i.e. the local machine is on the same OS build). Returns null
+  // when the image carries no path, the file is missing, or the build doesn't match. Mirrors
+  // ProfileExplorerCore.BinaryFileLocator.FindExactLocalBinaryFile so DataLayer can disassemble
+  // private OS binaries from the local install just like the old MCP engine.
+  private string? TryFindLocalBinary(IProfileImage image) {
+    foreach (string? candidate in LocalBinaryCandidates(image)) {
+      if (string.IsNullOrEmpty(candidate) || !File.Exists(candidate)) {
+        continue;
+      }
+
+      try {
+        var info = PEBinaryInfoProvider.GetBinaryFileInfo(candidate);
+        if (info == null) {
+          continue;
+        }
+
+        // Trust the local file only when it matches the same identity the symbol server keys on —
+        // TimeDateStamp + SizeOfImage — plus the module file name, so a stray local PE that merely
+        // shares a timestamp (image.ImagePath comes from trace data) is never disassembled by mistake.
+        bool stampMatches = info.TimeStamp == image.TimeDateStamp;
+        bool sizeMatches = image.Size <= 0 || info.ImageSize == image.Size;
+        bool nameMatches = string.IsNullOrEmpty(image.ImageName) ||
+          string.Equals(Path.GetFileName(candidate), Path.GetFileName(image.ImageName),
+                        StringComparison.OrdinalIgnoreCase);
+
+        if (stampMatches && sizeMatches && nameMatches) {
+          Log($"Using local on-disk binary for {image.ImageName}: {candidate} " +
+              $"(TimeDateStamp {info.TimeStamp:X8}, SizeOfImage {info.ImageSize:X} match trace)");
+          return candidate;
+        }
+
+        Log($"Local {image.ImageName} at {candidate} rejected: TimeDateStamp {info.TimeStamp:X8} vs trace " +
+            $"{image.TimeDateStamp:X8}, SizeOfImage {info.ImageSize:X} vs trace {image.Size:X}, " +
+            $"nameMatch={nameMatches} (wrong build/binary)");
+      }
+      catch (Exception ex) {
+        Log($"Local binary probe failed for {image.ImageName} at {candidate}: {ex.GetType().Name}: {ex.Message}");
+      }
+    }
+
+    return null;
+  }
+
+  // Candidate on-disk locations for a traced image, in priority order: the trace-recorded path first,
+  // then the standard OS install locations by file name (covers traces whose image path is an
+  // unresolvable NT/device path). Mirrors ProfileExplorerCore.BinaryFileLocator's local search; every
+  // candidate is still TimeDateStamp-gated by the caller so we never use the wrong build.
+  private static IEnumerable<string?> LocalBinaryCandidates(IProfileImage image) {
+    yield return ResolveLocalImagePath(image.ImagePath);
+
+    string? name = string.IsNullOrEmpty(image.ImageName) ? null : Path.GetFileName(image.ImageName);
+    if (string.IsNullOrEmpty(name)) {
+      yield break;
+    }
+
+    string sys = Environment.SystemDirectory; // e.g. C:\Windows\System32
+    yield return Path.Combine(sys, name);
+
+    string? win = Path.GetDirectoryName(sys); // e.g. C:\Windows
+    if (!string.IsNullOrEmpty(win)) {
+      yield return Path.Combine(win, name);
+      yield return Path.Combine(win, "SysWOW64", name);
+    }
+  }
+
+  // Translate NT-kernel image paths (\SystemRoot\..., \??\C:\...) to real filesystem paths so
+  // File.Exists can find the local binary. Drive-letter paths pass through unchanged.
+  private static string? ResolveLocalImagePath(string? path) {
+    if (string.IsNullOrEmpty(path)) {
+      return path;
+    }
+
+    if (path.StartsWith(@"\SystemRoot", StringComparison.OrdinalIgnoreCase)) {
+      string systemRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
+      return systemRoot + path.Substring(@"\SystemRoot".Length);
+    }
+
+    if (path.StartsWith(@"\??\", StringComparison.Ordinal)) {
+      return path.Substring(@"\??\".Length);
+    }
+
+    return path;
+  }
 
   // Null-object symbol locator for CreateForResolvedInput (no download path is exercised).
   private sealed class NullSymbolFileLocator : ISymbolFileLocator {

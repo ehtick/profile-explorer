@@ -140,6 +140,7 @@ public class SymbolServerClient : IDisposable, ISymbolFileLocator {
         using var response = await httpClient_.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
         if (response.StatusCode == HttpStatusCode.NotFound) {
+          log_?.Invoke($"404 (not on server): {url}");
           continue; // Try next server.
         }
 
