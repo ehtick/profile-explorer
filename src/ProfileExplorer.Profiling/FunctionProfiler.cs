@@ -99,10 +99,49 @@ public class FunctionProfiler : IDisposable {
 
   /// <summary>
   /// Register loaded images (modules) with their PDB identity for symbol resolution.
+  /// <para>
+  /// De-duplicates like the original Core: re-registering the identical image (same name + size) at a
+  /// base already registered is a silent no-op (e.g. an ImageDCStart rundown followed by the module's
+  /// ImageLoad). If a DIFFERENT binary is reported at a base already held by another, the base-keyed
+  /// resolver can only hold one: by default this throws (a likely de-duplication bug that would
+  /// otherwise silently mis-attribute the displaced module's samples), or — when
+  /// <see cref="ProfilerOptions.ThrowOnImageBaseCollision"/> is <c>false</c> — keeps the latest and warns.
+  /// </para>
   /// </summary>
+  /// <exception cref="InvalidOperationException">A different binary is registered at a base already held
+  /// by another and <see cref="ProfilerOptions.ThrowOnImageBaseCollision"/> is <c>true</c>.</exception>
   public void AddImages(IEnumerable<IProfileImage> images) {
     foreach (var image in images) {
       string key = image.ImageName;
+
+      if (imagesByBase_.TryGetValue(image.BaseAddress, out var existing)) {
+        // Same base already registered. Identity is compared case-SENSITIVELY (Ordinal): it matches old
+        // Core's storage dedup (ProfileImage identity is FilePath-exact) and the case-sensitive module
+        // identity used everywhere else here — two names differing only by case denote different binaries
+        // (e.g. the WinUI vs UWP "Microsoft.UI.Xaml.dll" pair).
+        bool identical = string.Equals(existing.ImageName, key, StringComparison.Ordinal) &&
+                         existing.Size == image.Size;
+        if (identical) {
+          continue; // Duplicate registration of the same image — dedupe, matching old Core's AddImage.
+        }
+
+        // A genuinely different binary at a base already held by another: the base-keyed resolver can
+        // keep only one, so silently proceeding would mis-attribute the displaced module's samples.
+        // This normally means the caller didn't collapse images to one-per-base for the sampling window.
+        string message =
+          $"Image base collision at 0x{image.BaseAddress:X}: '{existing.ImageName}' (size 0x{existing.Size:X}) " +
+          $"vs '{key}' (size 0x{image.Size:X}). Two different binaries were registered at the same base; " +
+          "resolution can only keep one.";
+
+        if (options_.ThrowOnImageBaseCollision) {
+          throw new InvalidOperationException(
+            message + " Ensure images are de-duplicated per sampling window before registration, or set " +
+            "ProfilerOptions.ThrowOnImageBaseCollision = false to keep the latest instead.");
+        }
+
+        Log(message + " Keeping the latest (ThrowOnImageBaseCollision = false).");
+      }
+
       imagesByModule_[key] = image;
       imagesByBase_[image.BaseAddress] = image;
       ipResolver_.AddImage(key, image.BaseAddress, image.Size);
@@ -134,10 +173,32 @@ public class FunctionProfiler : IDisposable {
   /// Providing functions this way makes <see cref="LoadSymbolsAsync"/> a no-op.
   /// </para>
   /// </summary>
-  /// <param name="baseAddress">The image's base address, matching the value registered via <see cref="AddImages"/>.</param>
+  /// <param name="moduleName">Module/image name. Must match (case-sensitively, Ordinal) the image
+  /// registered at <paramref name="baseAddress"/> via <see cref="AddImages"/> — a cross-check that catches
+  /// functions being attached to the wrong module. Case matters: two names differing only by case denote
+  /// different binaries.</param>
+  /// <param name="baseAddress">The image's base address, which MUST have been registered via
+  /// <see cref="AddImages"/> first.</param>
   /// <param name="sortedFunctions">The module's functions, sorted by ascending RVA.</param>
-  public void AddResolvedFunctions(long baseAddress, IReadOnlyList<FunctionDebugInfo> sortedFunctions) {
+  /// <exception cref="ArgumentException">The module name is empty, no image is registered at
+  /// <paramref name="baseAddress"/>, or the registered image's name doesn't match
+  /// <paramref name="moduleName"/>.</exception>
+  public void AddResolvedFunctions(string moduleName, long baseAddress,
+                                   IReadOnlyList<FunctionDebugInfo> sortedFunctions) {
+    ArgumentException.ThrowIfNullOrEmpty(moduleName);
     ArgumentNullException.ThrowIfNull(sortedFunctions);
+
+    if (!imagesByBase_.TryGetValue(baseAddress, out var image)) {
+      throw new ArgumentException(
+        $"No image is registered at base 0x{baseAddress:X}. Call AddImages before AddResolvedFunctions.",
+        nameof(baseAddress));
+    }
+
+    if (!string.Equals(image.ImageName, moduleName, StringComparison.Ordinal)) {
+      throw new ArgumentException(
+        $"Module name '{moduleName}' does not match the image registered at base 0x{baseAddress:X} " +
+        $"('{image.ImageName}').", nameof(moduleName));
+    }
 
     ipResolver_.SetFunctions(baseAddress,
       sortedFunctions as List<FunctionDebugInfo> ?? new List<FunctionDebugInfo>(sortedFunctions));
