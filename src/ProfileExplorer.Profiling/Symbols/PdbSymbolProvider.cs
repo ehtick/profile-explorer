@@ -24,6 +24,13 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
   private const int UndnameNoMemberType = 0x0200;
   private const int UndnameNameOnly = 0x1000;
 
+  // The exact undname flag set DemangleFunctionName applies (minus NameOnly). Shared with the DIA
+  // get_undecoratedNameEx overload comparison in FindFunctionSymbolByNameImpl so both sides produce
+  // identical strings and overload selection keeps matching (strips __cdecl/__ptr64 like PE's
+  // NoSpecialKeywords rendering).
+  private const int UndnameDemangleFlags = UndnameNoAccessSpecifiers | UndnameNoAllocationModel |
+                                           UndnameNoMemberType | UndnameNoMsKeywords | UndnameNoMsThistype;
+
   private IDiaDataSource? diaSource_;
   private IDiaSession? session_;
   private IDiaSymbol? globalSymbol_;
@@ -208,9 +215,9 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
     }
 
     // Include NoMsKeywords/NoMsThistype so calling-convention + pointer modifiers (__cdecl, __ptr64)
-    // are stripped, matching the pre-refactor core's NoSpecialKeywords rendering.
-    int flags = UndnameNoAccessSpecifiers | UndnameNoAllocationModel | UndnameNoMemberType |
-                UndnameNoMsKeywords | UndnameNoMsThistype;
+    // are stripped, matching the pre-refactor core's NoSpecialKeywords rendering. The same flag set is
+    // reused for the DIA overload comparison in FindFunctionSymbolByNameImpl (see UndnameDemangleFlags).
+    int flags = UndnameDemangleFlags;
     if (onlyName) flags |= UndnameNameOnly;
 
     // DbgHelp UnDecorateSymbolName is not thread safe and can return bogus
@@ -375,9 +382,10 @@ public class PdbSymbolProvider : ISymbolDebugInfo {
         symbolEnum.Next(1, out var symbol, out uint retrieved);
         if (retrieved == 0) break;
 
-        // Class::function matches; check the full unmangled name to pick the right overload.
+        // Class::function matches; check the full unmangled name to pick the right overload. Use the
+        // SAME flag set DemangleFunctionName produced demangledName with, so the strings are comparable.
         try {
-          symbol.get_undecoratedNameEx(UndnameNoAccessSpecifiers, out string symbolDemangledName);
+          symbol.get_undecoratedNameEx(UndnameDemangleFlags, out string symbolDemangledName);
           if (symbolDemangledName == demangledName) {
             // Exact match — release any earlier first-match candidate before returning.
             if (candidateSymbol != null && !ReferenceEquals(symbol, candidateSymbol)) {
