@@ -60,7 +60,7 @@ public class IpResolverProviderTests {
     resolver.AddImage("mod.dll", ModuleBase, ModuleSize);
     // The contiguous list would resolve SampleIp to listFuncName; a registered provider must win.
     var functions = new List<FunctionDebugInfo> { new(listFuncName, FuncRva, FuncSize) };
-    resolver.SetFunctions("mod.dll", functions, provider);
+    resolver.SetFunctions(ModuleBase, functions, provider);
     return resolver;
   }
 
@@ -145,7 +145,7 @@ public class IpResolverProviderTests {
     // Parent's primary chunk is the only entry in the contiguous list; the cold chunk is absent.
     var withProvider = new IpResolver();
     withProvider.AddImage("mod.dll", ModuleBase, ModuleSize);
-    withProvider.SetFunctions("mod.dll", new List<FunctionDebugInfo> { parentFunc }, stub);
+    withProvider.SetFunctions(ModuleBase, new List<FunctionDebugInfo> { parentFunc }, stub);
 
     var resolved = withProvider.Resolve(ColdChunkIp);
     Assert.IsNotNull(resolved);
@@ -157,7 +157,7 @@ public class IpResolverProviderTests {
     // the exact regression the provider path fixes.
     var listOnly = new IpResolver();
     listOnly.AddImage("mod.dll", ModuleBase, ModuleSize);
-    listOnly.SetFunctions("mod.dll", new List<FunctionDebugInfo> { parentFunc });
+    listOnly.SetFunctions(ModuleBase, new List<FunctionDebugInfo> { parentFunc });
 
     var listOnlyResolved = listOnly.Resolve(ColdChunkIp);
     Assert.IsNotNull(listOnlyResolved);

@@ -42,7 +42,7 @@ public class FunctionProfilerInjectionTests {
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
 
     profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
-    profiler.AddResolvedFunctions(module, new List<FunctionDebugInfo> {
+    profiler.AddResolvedFunctions(baseAddr, new List<FunctionDebugInfo> {
       new("Main", 0x1000, 0x800),
       new("Foo", 0x2000, 0x800),
       new("Bar", 0x3000, 0x800)
@@ -81,10 +81,8 @@ public class FunctionProfilerInjectionTests {
     var options = new ProfilerOptions { SymbolPaths = new[] { "srv*https://symbols.invalid" } };
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
 
-    Assert.ThrowsException<ArgumentException>(() =>
-      profiler.AddResolvedFunctions("", new List<FunctionDebugInfo>()));
     Assert.ThrowsException<ArgumentNullException>(() =>
-      profiler.AddResolvedFunctions("m.dll", null!));
+      profiler.AddResolvedFunctions(0x1000, null!));
   }
 
   [TestMethod]
@@ -101,7 +99,7 @@ public class FunctionProfilerInjectionTests {
 
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
     profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
-    profiler.AddResolvedFunctions(module, new List<FunctionDebugInfo> {
+    profiler.AddResolvedFunctions(baseAddr, new List<FunctionDebugInfo> {
       new("Main", 0x1000, 0x800),
       new("Foo", 0x2000, 0x800),
       new("Bar", 0x3000, 0x800),

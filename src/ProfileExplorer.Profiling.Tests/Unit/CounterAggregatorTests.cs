@@ -22,7 +22,7 @@ public class CounterAggregatorTests {
   private (IpResolver resolver, CounterAggregator aggregator) Setup() {
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
-    resolver.SetFunctions("test.dll", [
+    resolver.SetFunctions(0x1000, [
       new FunctionDebugInfo("HotFunc", 0x100, 0x50)
     ]);
     return (resolver, new CounterAggregator(resolver));

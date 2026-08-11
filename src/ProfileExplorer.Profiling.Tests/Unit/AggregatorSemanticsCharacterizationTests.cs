@@ -53,7 +53,7 @@ public class AggregatorSemanticsCharacterizationTests {
     // ---- LIBRARY: real SampleAggregator over a leaf-first stack [leaf, caller-return] ----
     var ipResolver = new IpResolver();
     ipResolver.AddImage(Module, ModuleBase, ModuleSize);
-    ipResolver.SetFunctions(Module, new List<FunctionDebugInfo> {
+    ipResolver.SetFunctions(ModuleBase, new List<FunctionDebugInfo> {
       new FunctionDebugInfo("Leaf", LeafRva, 0x100),
       new FunctionDebugInfo("Caller", CallerRva, 0x100)
     });

@@ -18,7 +18,7 @@ public class SampleAggregatorTests {
     var functions = new List<FunctionDebugInfo> {
       new(funcName, funcRva, funcSize)
     };
-    resolver.SetFunctions(module, functions);
+    resolver.SetFunctions(moduleBase, functions);
     return resolver;
   }
 
@@ -54,7 +54,7 @@ public class SampleAggregatorTests {
   public void MultipleSamples_DifferentFunctions_SeparateProfiles() {
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
-    resolver.SetFunctions("test.dll", [
+    resolver.SetFunctions(0x1000, [
       new FunctionDebugInfo("Foo", 0x100, 0x50),
       new FunctionDebugInfo("Bar", 0x200, 0x50),
       new FunctionDebugInfo("Baz", 0x300, 0x50)
@@ -70,6 +70,29 @@ public class SampleAggregatorTests {
 
     var profiles = aggregator.Build();
     Assert.AreEqual(3, profiles.Count);
+  }
+
+  [TestMethod]
+  public void SameFileName_DifferentBases_ResolveIndependently() {
+    // Two different binaries both named "foo.dll" at different bases, with DIFFERENT function layouts.
+    // Each base's samples must resolve to that binary's OWN function (symbols are keyed by base), not
+    // both resolve through whichever function list registered last for the shared name.
+    var resolver = new IpResolver();
+    resolver.AddImage("foo.dll", 0x10000, 0x1000);
+    resolver.AddImage("foo.dll", 0x20000, 0x1000);
+    resolver.SetFunctions(0x10000, [new FunctionDebugInfo("Alpha", 0x100, 0x50)]);
+    resolver.SetFunctions(0x20000, [new FunctionDebugInfo("Beta", 0x100, 0x50)]);
+
+    var aggregator = new SampleAggregator(resolver);
+    var w = TimeSpan.FromMilliseconds(1);
+    aggregator.AddSamples([
+      new SyntheticSample(0x10110, w, 1, 1, "foo.dll", 0x10000), // base 0x10000 -> Alpha
+      new SyntheticSample(0x20110, w, 1, 1, "foo.dll", 0x20000)  // base 0x20000 -> Beta
+    ]);
+
+    var names = aggregator.Build().Select(p => p.Key.FunctionName).OrderBy(n => n).ToArray();
+    CollectionAssert.AreEqual(new[] { "Alpha", "Beta" }, names,
+      "Each same-named binary's samples must resolve to its own function, not merge.");
   }
 
   [TestMethod]
@@ -198,7 +221,7 @@ public class SampleAggregatorTests {
     // receive inclusive weight (the leaf's `continue` used to drop the whole caller walk).
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
-    resolver.SetFunctions("test.dll", [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
+    resolver.SetFunctions(0x1000, [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
 
     var aggregator = new SampleAggregator(resolver);
     var weight = TimeSpan.FromMilliseconds(1);
@@ -227,7 +250,7 @@ public class SampleAggregatorTests {
     // get inclusive weight. Only the leaf is dropped — not the whole stack.
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
-    resolver.SetFunctions("test.dll", [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
+    resolver.SetFunctions(0x1000, [new FunctionDebugInfo("Bar", 0x200, 0x50)]);
 
     var aggregator = new SampleAggregator(resolver);
     var weight = TimeSpan.FromMilliseconds(1);
@@ -251,7 +274,7 @@ public class SampleAggregatorTests {
   public void PercentCalculation_RelativeToTotalWeight() {
     var resolver = new IpResolver();
     resolver.AddImage("test.dll", 0x1000, 0x10000);
-    resolver.SetFunctions("test.dll", [
+    resolver.SetFunctions(0x1000, [
       new FunctionDebugInfo("Foo", 0x100, 0x50),
       new FunctionDebugInfo("Bar", 0x200, 0x50)
     ]);
