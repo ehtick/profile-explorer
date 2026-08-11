@@ -42,7 +42,7 @@ public class FunctionProfilerInjectionTests {
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
 
     profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
-    profiler.AddResolvedFunctions(module, new List<FunctionDebugInfo> {
+    profiler.AddResolvedFunctions(module, baseAddr, new List<FunctionDebugInfo> {
       new("Main", 0x1000, 0x800),
       new("Foo", 0x2000, 0x800),
       new("Bar", 0x3000, 0x800)
@@ -77,14 +77,116 @@ public class FunctionProfilerInjectionTests {
   }
 
   [TestMethod]
-  public void AddResolvedFunctions_NullArguments_Throw() {
+  public void AddResolvedFunctions_InvalidArguments_Throw() {
+    const string module = "app.dll";
+    const long baseAddr = 0x140000000;
+    const int size = 0x100000;
     var options = new ProfilerOptions { SymbolPaths = new[] { "srv*https://symbols.invalid" } };
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
 
-    Assert.ThrowsException<ArgumentException>(() =>
-      profiler.AddResolvedFunctions("", new List<FunctionDebugInfo>()));
+    // Null function list.
     Assert.ThrowsException<ArgumentNullException>(() =>
-      profiler.AddResolvedFunctions("m.dll", null!));
+      profiler.AddResolvedFunctions(module, baseAddr, null!));
+    // Empty module name.
+    Assert.ThrowsException<ArgumentException>(() =>
+      profiler.AddResolvedFunctions("", baseAddr, new List<FunctionDebugInfo>()));
+    // Base address was never registered via AddImages.
+    Assert.ThrowsException<ArgumentException>(() =>
+      profiler.AddResolvedFunctions(module, 0xDEADBEEF, new List<FunctionDebugInfo>()));
+    // Module name does not match the image registered at that base (wrong-module guard).
+    Assert.ThrowsException<ArgumentException>(() =>
+      profiler.AddResolvedFunctions("wrong.dll", baseAddr, new List<FunctionDebugInfo>()));
+  }
+
+  [TestMethod]
+  public void AddResolvedFunctions_ModuleNameCaseMismatch_Throws() {
+    const string module = "App.DLL";
+    const long baseAddr = 0x140000000;
+    const int size = 0x100000;
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      IncludeManagedCode = false,
+      IncludePerformanceCounters = false
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
+
+    // Module identity is case-sensitive (Ordinal) throughout the library: a case-only difference denotes
+    // a different binary (the WinUI vs UWP xaml pair), so the wrong-module guard rejects it.
+    Assert.ThrowsException<ArgumentException>(() =>
+      profiler.AddResolvedFunctions("app.dll", baseAddr,
+        new List<FunctionDebugInfo> { new("Foo", 0x1000, 0x800) }));
+  }
+
+  [TestMethod]
+  public void AddImages_DuplicateSameImage_IsIdempotent() {
+    const string module = "app.dll";
+    const long baseAddr = 0x140000000;
+    const int size = 0x100000;
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      IncludeManagedCode = false,
+      IncludePerformanceCounters = false
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+
+    // The same image reported twice (e.g. an ImageDCStart rundown followed by its ImageLoad) is
+    // deduped, matching old Core — resolution still works normally afterward.
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
+
+    profiler.AddResolvedFunctions(module, baseAddr,
+      new List<FunctionDebugInfo> { new("Foo", 0x1000, 0x800) });
+    profiler.AddSamples(new IProfileSample[] {
+      new SyntheticSample(baseAddr + 0x1000 + 0x10, TimeSpan.FromMilliseconds(5), 1, 1, module, baseAddr)
+    });
+
+    var report = profiler.GetReport();
+    Assert.AreEqual(TimeSpan.FromMilliseconds(5),
+      report.Functions[new ProfileFunctionId(module, "Foo")].ExclusiveWeight);
+  }
+
+  [TestMethod]
+  public void AddImages_SameBaseDifferentImage_ThrowsByDefault() {
+    const long baseAddr = 0x140000000;
+    const int size = 0x100000;
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      IncludeManagedCode = false,
+      IncludePerformanceCounters = false
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+
+    // Two DIFFERENT binaries at the same base means the caller didn't de-dupe per sampling window;
+    // silently keeping one would mis-attribute the other's samples, so this throws by default.
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages(("first.dll", baseAddr, size)));
+    Assert.ThrowsException<InvalidOperationException>(() =>
+      profiler.AddImages(SyntheticSampleBuilder.CreateImages(("second.dll", baseAddr, size))));
+  }
+
+  [TestMethod]
+  public void AddImages_SameBaseDifferentImage_LenientMode_LastWins() {
+    const long baseAddr = 0x140000000;
+    const int size = 0x100000;
+    var options = new ProfilerOptions {
+      SymbolPaths = new[] { "srv*https://symbols.invalid" },
+      IncludeManagedCode = false,
+      IncludePerformanceCounters = false,
+      ThrowOnImageBaseCollision = false
+    };
+    using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
+
+    // Opt-in lenient mode: the base-keyed resolver can hold only one, so the latest registration wins
+    // (warned, non-fatal). Attaching functions to the displaced image is then rejected by the guard.
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages(("first.dll", baseAddr, size)));
+    profiler.AddImages(SyntheticSampleBuilder.CreateImages(("second.dll", baseAddr, size)));
+
+    profiler.AddResolvedFunctions("second.dll", baseAddr,
+      new List<FunctionDebugInfo> { new("Bar", 0x1000, 0x800) });
+    Assert.ThrowsException<ArgumentException>(() =>
+      profiler.AddResolvedFunctions("first.dll", baseAddr,
+        new List<FunctionDebugInfo> { new("Foo", 0x1000, 0x800) }));
   }
 
   [TestMethod]
@@ -101,7 +203,7 @@ public class FunctionProfilerInjectionTests {
 
     using var profiler = new FunctionProfiler(options, new NoSymbolLocator());
     profiler.AddImages(SyntheticSampleBuilder.CreateImages((module, baseAddr, size)));
-    profiler.AddResolvedFunctions(module, new List<FunctionDebugInfo> {
+    profiler.AddResolvedFunctions(module, baseAddr, new List<FunctionDebugInfo> {
       new("Main", 0x1000, 0x800),
       new("Foo", 0x2000, 0x800),
       new("Bar", 0x3000, 0x800),

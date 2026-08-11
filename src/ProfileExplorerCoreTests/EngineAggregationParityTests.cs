@@ -314,7 +314,7 @@ public class EngineAggregationParityTests {
       (int ThreadId, int WeightMs, (Fn Func, long Offset)[] Frames)[] stacks) {
     var ipResolver = new IpResolver();
     ipResolver.AddImage(Module, Base, ModuleSize);
-    ipResolver.SetFunctions(Module, new List<FunctionDebugInfo> {
+    ipResolver.SetFunctions(Base, new List<FunctionDebugInfo> {
       new(Main.Name, Main.Rva, Main.Size),
       new(Foo.Name, Foo.Rva, Foo.Size),
       new(Bar.Name, Bar.Rva, Bar.Size),

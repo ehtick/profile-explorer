@@ -75,7 +75,7 @@ public class FunctionProfilerEndToEndTests {
     // We'll test the lower-level components directly since we have local files.
     var ipResolver = new Profiling.IpResolver();
     ipResolver.AddImage(TestDataHelper.MsoModuleName, moduleBase, 0x1000000);
-    ipResolver.SetFunctions(TestDataHelper.MsoModuleName, allFunctions);
+    ipResolver.SetFunctions(moduleBase, allFunctions);
 
     var aggregator = new Profiling.SampleAggregator(ipResolver);
     aggregator.AddSamples(samples);
@@ -183,7 +183,7 @@ public class FunctionProfilerEndToEndTests {
 
     var ipResolver = new Profiling.IpResolver();
     ipResolver.AddImage(TestDataHelper.MsoModuleName, moduleBase, 0x1000000);
-    ipResolver.SetFunctions(TestDataHelper.MsoModuleName, functions);
+    ipResolver.SetFunctions(moduleBase, functions);
 
     var aggregator = new Profiling.SampleAggregator(ipResolver);
     aggregator.AddSamples([
@@ -290,7 +290,7 @@ public class FunctionProfilerEndToEndTests {
 
     var ipResolver = new Profiling.IpResolver();
     ipResolver.AddImage(TestDataHelper.MsoModuleName, LocalBinaryModuleBase, 0x1000000);
-    ipResolver.SetFunctions(TestDataHelper.MsoModuleName, functions);
+    ipResolver.SetFunctions(LocalBinaryModuleBase, functions);
 
     var aggregator = new Profiling.SampleAggregator(ipResolver);
     var samples = new List<IProfileSample>();

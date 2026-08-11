@@ -70,6 +70,15 @@ public class ProfilerOptions {
   public Action<string>? LogCallback { get; set; }
 
   /// <summary>
+  /// Policy for when two DIFFERENT binaries are registered at the same base address via
+  /// <see cref="FunctionProfiler.AddImages"/> (the base-keyed resolver can only keep one). When
+  /// <c>true</c> (the default) this throws an <see cref="InvalidOperationException"/>, surfacing a likely
+  /// image de-duplication bug rather than silently mis-attributing the displaced module's samples. Set
+  /// to <c>false</c> to keep the most-recently-registered image and log a non-fatal warning instead.
+  /// </summary>
+  public bool ThrowOnImageBaseCollision { get; set; } = true;
+
+  /// <summary>
   /// Validate options, throwing for invalid values. Percent thresholds are additionally clamped
   /// into the [0, 100] range as a convenience (they are normalized in place).
   /// </summary>

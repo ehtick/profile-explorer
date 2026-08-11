@@ -13,7 +13,11 @@ namespace ProfileExplorer.Profiling.Profiling;
 /// </summary>
 internal class IpResolver {
   private readonly SortedList<long, ImageInfo> imagesByBaseAddress_ = [];
-  private readonly ConcurrentDictionary<string, List<FunctionDebugInfo>> sortedFunctionsByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  // Per-module function list keyed by the image BASE ADDRESS — the same identity the address resolver
+  // uses. Two modules with the same file name loaded at different bases (side-by-side assemblies, or
+  // case-only-different DLLs like WinUI "Microsoft.ui.xaml.dll" vs UWP "Microsoft.UI.Xaml.dll") resolve
+  // their functions independently, matching the original Core, which keyed per-module function objects.
+  private readonly ConcurrentDictionary<long, List<FunctionDebugInfo>> sortedFunctionsByBase_ = new();
   // Per-module debug-info provider paired with its own RVA cache. The provider has a DIA fallback that
   // resolves PGO-split function chunks the contiguous list omits; the cache memoizes results so a
   // repeated return address doesn't re-query DIA. Both live in one entry so "provider present" always
@@ -23,7 +27,7 @@ internal class IpResolver {
     ISymbolDebugInfo Provider,
     ConcurrentDictionary<long, FunctionDebugInfo?> Cache);
 
-  private readonly ConcurrentDictionary<string, ModuleResolver> resolversByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  private readonly ConcurrentDictionary<long, ModuleResolver> resolversByBase_ = new();
   private readonly object fallbackLock_ = new();
   private readonly ManagedMethodResolver? managedResolver_;
 
@@ -79,17 +83,18 @@ internal class IpResolver {
   }
 
   /// <summary>
-  /// Register sorted function debug info for a module. Optionally register the debug-info provider so
-  /// that RVAs the contiguous sorted list doesn't cover (PGO-split function chunks) can be resolved
-  /// via the provider's DIA-backed <see cref="ISymbolDebugInfo.FindFunctionByRVA"/> — matching Core,
-  /// which resolves those chunks and so credits inclusive time to the split function's parent.
+  /// Register sorted function debug info for the image at <paramref name="baseAddress"/>. Optionally
+  /// register the debug-info provider so RVAs the contiguous sorted list doesn't cover (PGO-split
+  /// function chunks) can be resolved via its DIA-backed <see cref="ISymbolDebugInfo.FindFunctionByRVA"/>
+  /// — matching Core. Keyed by base so two same-named modules (different binaries at different bases)
+  /// resolve their functions independently.
   /// </summary>
-  public void SetFunctions(string moduleName, List<FunctionDebugInfo> sortedFunctions,
+  public void SetFunctions(long baseAddress, List<FunctionDebugInfo> sortedFunctions,
                            ISymbolDebugInfo? debugInfo = null) {
-    sortedFunctionsByModule_[moduleName] = sortedFunctions;
+    sortedFunctionsByBase_[baseAddress] = sortedFunctions;
 
     if (debugInfo != null) {
-      resolversByModule_[moduleName] = new ModuleResolver(debugInfo, new ConcurrentDictionary<long, FunctionDebugInfo?>());
+      resolversByBase_[baseAddress] = new ModuleResolver(debugInfo, new ConcurrentDictionary<long, FunctionDebugInfo?>());
     }
   }
 
@@ -138,13 +143,14 @@ internal class IpResolver {
 
     long moduleRva = ip - image.BaseAddress;
 
-    // Find the function within the module.
-    if (sortedFunctionsByModule_.TryGetValue(image.Name, out var functions)) {
+    // Find the function within the module. Keyed by the image's BASE ADDRESS, so two modules with the
+    // same file name (different binaries at different bases) resolve their functions independently.
+    if (sortedFunctionsByBase_.TryGetValue(image.BaseAddress, out var functions)) {
       // When the module's debug-info provider is registered, resolve through its overlapping-aware +
       // DIA-backed lookup (matches Core). The plain contiguous BinarySearch returns the wrong function
       // for overlapping/nested symbols (e.g. an assembly label nested inside a larger function)
       // and misses PGO-split chunks entirely, so split functions lose their inclusive time.
-      var func = resolversByModule_.TryGetValue(image.Name, out var resolver)
+      var func = resolversByBase_.TryGetValue(image.BaseAddress, out var resolver)
         ? ResolveViaProvider(resolver, moduleRva)
         : FunctionDebugInfo.BinarySearch(functions, moduleRva);
 
