@@ -48,7 +48,7 @@ public class IpResolverRealProviderTests {
     int size = (int)Math.Min(maxEndRva + 0x10000, int.MaxValue);
     var resolver = new IpResolver();
     resolver.AddImage(TestDataHelper.MsoModuleName, ModuleBase, size);
-    resolver.SetFunctions(TestDataHelper.MsoModuleName, functions, withProvider ? provider : null);
+    resolver.SetFunctions(ModuleBase, functions, withProvider ? provider : null);
     return resolver;
   }
 

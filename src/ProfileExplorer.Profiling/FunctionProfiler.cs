@@ -26,17 +26,26 @@ public class FunctionProfiler : IDisposable {
   private readonly CounterAggregator? counterAggregator_;
   private readonly ManagedMethodResolver? managedResolver_;
 
-  private readonly Dictionary<string, IProfileImage> imagesByModule_ = new(StringComparer.OrdinalIgnoreCase);
-  private readonly Dictionary<string, ISymbolDebugInfo> debugInfoByModule_ = new(StringComparer.OrdinalIgnoreCase);
-  private readonly Dictionary<string, string> pdbPathByModule_ = new(StringComparer.OrdinalIgnoreCase);
-  private readonly Dictionary<string, string> binaryPathByModule_ = new(StringComparer.OrdinalIgnoreCase);
+  // Images keyed by base address — the identity the resolver uses. Symbol loading iterates this so two
+  // modules with the same file name (different binaries at different bases) are each loaded and get
+  // their own function set, matching the original Core.
+  private readonly Dictionary<long, IProfileImage> imagesByBase_ = new();
+  // Disassembly-side caches keyed by the EXACT (case-sensitive) module name — the only identity
+  // available on the disassembly path (ProfileFunctionId / functionId is name-based). Case-only-
+  // different DLLs stay distinct; two truly same-named binaries share these caches (they also merge in
+  // the final profile). Address resolution itself is keyed by base in IpResolver, so it never collides.
+  private readonly Dictionary<string, IProfileImage> imagesByModule_ = new(StringComparer.Ordinal);
+  private readonly Dictionary<string, ISymbolDebugInfo> debugInfoByModule_ = new(StringComparer.Ordinal);
+  private readonly Dictionary<string, string> pdbPathByModule_ = new(StringComparer.Ordinal);
+  private readonly Dictionary<string, string> binaryPathByModule_ = new(StringComparer.Ordinal);
 
   private ProfileReport? cachedReport_;
   private bool symbolsLoaded_;
-  // Modules whose symbol load has already been attempted, so a later (filtered or full) load skips
+  // Image bases whose symbol load has already been attempted, so a later (filtered or full) load skips
   // them instead of re-probing. This lets a filtered LoadSymbolsForSamplesAsync be followed by a full
-  // LoadSymbolsAsync that still loads the remaining, previously-unfiltered modules.
-  private readonly HashSet<string> loadedModules_ = new(StringComparer.OrdinalIgnoreCase);
+  // LoadSymbolsAsync that still loads the remaining, previously-unfiltered modules. Keyed by base so
+  // two same-named modules (different bases) are each attempted independently.
+  private readonly HashSet<long> loadedModules_ = new();
 
   public FunctionProfiler(ProfilerOptions options)
     : this(options, symbolResolver: null) {
@@ -95,6 +104,7 @@ public class FunctionProfiler : IDisposable {
     foreach (var image in images) {
       string key = image.ImageName;
       imagesByModule_[key] = image;
+      imagesByBase_[image.BaseAddress] = image;
       ipResolver_.AddImage(key, image.BaseAddress, image.Size);
     }
 
@@ -124,16 +134,12 @@ public class FunctionProfiler : IDisposable {
   /// Providing functions this way makes <see cref="LoadSymbolsAsync"/> a no-op.
   /// </para>
   /// </summary>
-  /// <param name="moduleName">Module/image name, matching <see cref="IProfileImage.ImageName"/>.</param>
+  /// <param name="baseAddress">The image's base address, matching the value registered via <see cref="AddImages"/>.</param>
   /// <param name="sortedFunctions">The module's functions, sorted by ascending RVA.</param>
-  public void AddResolvedFunctions(string moduleName, IReadOnlyList<FunctionDebugInfo> sortedFunctions) {
-    if (string.IsNullOrEmpty(moduleName)) {
-      throw new ArgumentException("Module name is required.", nameof(moduleName));
-    }
-
+  public void AddResolvedFunctions(long baseAddress, IReadOnlyList<FunctionDebugInfo> sortedFunctions) {
     ArgumentNullException.ThrowIfNull(sortedFunctions);
 
-    ipResolver_.SetFunctions(moduleName,
+    ipResolver_.SetFunctions(baseAddress,
       sortedFunctions as List<FunctionDebugInfo> ?? new List<FunctionDebugInfo>(sortedFunctions));
     symbolsLoaded_ = true; // Host owns symbol acquisition; suppress the profiler's own download path.
     InvalidateReport();
@@ -307,12 +313,13 @@ public class FunctionProfiler : IDisposable {
   private async Task LoadSymbolsCoreAsync(IReadOnlySet<string>? moduleFilter, CancellationToken ct = default) {
     if (symbolsLoaded_) return;
 
-    foreach (var (moduleName, image) in imagesByModule_) {
+    foreach (var image in imagesByBase_.Values) {
+      string moduleName = image.ImageName;
       if (moduleFilter != null && !moduleFilter.Contains(moduleName)) continue;
-      if (loadedModules_.Contains(moduleName)) continue; // Already attempted by an earlier load.
+      if (loadedModules_.Contains(image.BaseAddress)) continue; // Already attempted by an earlier load.
       if (image.PdbGuid == Guid.Empty) continue;
 
-      loadedModules_.Add(moduleName); // Mark attempted regardless of outcome so no module is re-probed.
+      loadedModules_.Add(image.BaseAddress); // Mark attempted regardless of outcome so no base is re-probed.
       try {
         string pdbName = !string.IsNullOrEmpty(image.PdbName)
           ? Path.GetFileName(image.PdbName)
@@ -338,7 +345,8 @@ public class FunctionProfiler : IDisposable {
             // Pass the provider too so the resolver can fall back to its DIA-backed RVA lookup for
             // PGO-split function chunks the contiguous list omits (matches Core, which credits their
             // inclusive time to the parent function).
-            ipResolver_.SetFunctions(moduleName, sortedFunctions, provider);
+            // Attach by base address so two same-named modules (different bases) resolve independently.
+            ipResolver_.SetFunctions(image.BaseAddress, sortedFunctions, provider);
           }
           else {
             Log($"PDB loaded but 0 functions: {moduleName} ({pdbPath})");

@@ -18,10 +18,10 @@ public class CallTreeBuilderTests {
       resolver.AddImage(module, moduleBase, moduleSize);
     }
 
-    var grouped = functions.GroupBy(f => f.module);
+    var grouped = functions.GroupBy(f => (f.module, f.moduleBase));
     foreach (var group in grouped) {
       var funcList = group.Select(f => new FunctionDebugInfo(f.funcName, f.funcRva, f.funcSize)).ToList();
-      resolver.SetFunctions(group.Key, funcList);
+      resolver.SetFunctions(group.Key.moduleBase, funcList);
     }
 
     return (resolver, new CallTreeBuilder(resolver));
