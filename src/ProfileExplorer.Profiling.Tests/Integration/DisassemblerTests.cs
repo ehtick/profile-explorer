@@ -86,6 +86,57 @@ public class DisassemblerTests {
     }
   }
 
+  // Guards the demangling FunctionProfiler wires into the disassembler (PR #73): resolved direct
+  // call/jump targets must render in demangled Class::Method form, never as raw MSVC mangling
+  // (?...@@). Compares the same function disassembled with vs. without the name formatter so the
+  // assertion only fires on targets the formatter actually changes (imports/addresses are ignored).
+  [TestMethod]
+  public void Disassemble_DemanglesResolvedCallTargets() {
+    if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }
+
+    var (func, provider) = FindTestFunction();
+    if (func == null) { Assert.Inconclusive("No suitable function found."); provider?.Dispose(); return; }
+
+    using (provider) {
+      var functions = provider!.GetSortedFunctions();
+      var bigFunc = functions.Where(f => f.Size > 200).OrderByDescending(f => f.Size).FirstOrDefault();
+      if (bigFunc == null) { Assert.Inconclusive("No large function found."); return; }
+
+      var mangled = new System.Text.RegularExpressions.Regex(@"\?[\w@$?]+@@");
+
+      // Baseline: no formatter -> resolved C++ targets stay raw-mangled.
+      using var raw = Disassembler.CreateForBinary(DllPath, provider, null);
+      var rawText = raw!.DisassembleToList(bigFunc.RVA, (int)bigFunc.Size).Select(i => i.Text).ToList();
+
+      // The exact formatter FunctionProfiler.GetAnnotatedAssemblyAsync wires in.
+      using var demangled = Disassembler.CreateForBinary(DllPath, provider,
+        static name => PdbSymbolProvider.DemangleFunctionName(name, onlyName: true));
+      var demText = demangled!.DisassembleToList(bigFunc.RVA, (int)bigFunc.Size).Select(i => i.Text).ToList();
+
+      Assert.AreEqual(rawText.Count, demText.Count, "Name formatting must not change the instruction stream.");
+
+      // Any DIRECT call/jmp whose target was mangled without the formatter must be demangled with it.
+      // Memory-operand targets (imports like [__imp_?Name@@]) are decorated on both sides — skip them.
+      bool sawMangledDirectTarget = false;
+      for (int i = 0; i < rawText.Count; i++) {
+        string r = rawText[i];
+        bool isDirectBranch = (r.StartsWith("call ") || r.StartsWith("jmp ")) && !r.Contains('[');
+        if (isDirectBranch && mangled.IsMatch(r)) {
+          sawMangledDirectTarget = true;
+          StringAssert.DoesNotMatch(demText[i], mangled,
+            $"Formatter should demangle resolved target. raw='{r}' demangled='{demText[i]}'");
+          Assert.IsTrue(demText[i].Contains("::"),
+            $"Demangled C++ target should use Class::Method form: '{demText[i]}'");
+          Assert.IsFalse(demText[i].Contains("__cdecl") || demText[i].Contains("__ptr64"),
+            $"Demangled target should have MS keywords stripped: '{demText[i]}'");
+        }
+      }
+
+      if (!sawMangledDirectTarget)
+        Assert.Inconclusive("Fixture function had no directly-called mangled C++ targets to demangle.");
+    }
+  }
+
   [TestMethod]
   public void Disassemble_FunctionBoundaries() {
     if (!CanRun()) { Assert.Inconclusive("Test data not available."); return; }

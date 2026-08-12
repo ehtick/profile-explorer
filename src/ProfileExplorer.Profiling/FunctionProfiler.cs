@@ -534,7 +534,11 @@ public class FunctionProfiler : IDisposable {
 
     // Disassemble using the mature capstone disassembler (reads architecture and image base
     // from the PE binary itself). Resolves call/jump targets via the debug info provider.
-    using var disassembler = Disassembler.CreateForBinary(binaryPath, debugInfoProvider, null);
+    // Demangle resolved call/jump target names to the name-only Class::Method form so they don't
+    // render as raw mangled MSVC symbols (?...@@) — matching the pre-refactor ProfileExplorerCore
+    // ASMNameProvider output and keeping call targets consistent with demangled function names.
+    using var disassembler = Disassembler.CreateForBinary(binaryPath, debugInfoProvider,
+      static name => PdbSymbolProvider.DemangleFunctionName(name, onlyName: true));
 
     if (disassembler == null) return null;
 
