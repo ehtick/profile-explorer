@@ -11,7 +11,6 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
-using System.Web;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -308,6 +307,11 @@ public class PerformanceCounterSetEx {
   public double FindCounterValue(int perfCounterId) {
     int index = Counters.FindIndex(item => item.CounterId == perfCounterId);
     return index != -1 ? Counters[index].Value : 0;
+  }
+
+  public double? FindCounterValueOrNull(int perfCounterId) {
+    int index = Counters.FindIndex(item => item.CounterId == perfCounterId);
+    return index != -1 ? Counters[index].Value : null;
   }
 
   public void Add(PerformanceCounterValueEx counterEx) {
@@ -2789,149 +2793,49 @@ public partial class SectionPanel : ToolPanelControl, INotifyPropertyChanged {
     }
   }
 
-  private string ExportFunctionListAsMarkdown(List<IRTextFunctionEx> list) {
-    var sb = new StringBuilder();
-    string header = "| Function | Module |";
-    string separator = "|----------|--------|";
+  private List<FunctionListExportColumn> CreateFunctionListExportColumns() {
+    var columns = new List<FunctionListExportColumn> {
+      new("Function", func => func.Name, isExcelHighlighted: true),
+      new("Module", func => func.ModuleName, isExcelHighlighted: true)
+    };
 
     if (profileControlsVisible_) {
-      header += " Time (ms) | Time (%) | Time incl (ms) | Time incl (%) |";
-      separator += "-----------|----------|----------------|---------------|";
+      columns.Add(new("Time (ms)", func => $"{func.ExclusiveWeight.TotalMilliseconds}", true,
+                      isExcelHighlighted: true));
+      columns.Add(new("Time (%)", func => func.ExclusivePercentage.AsPercentageString(2, false), true,
+                      isExcelHighlighted: true));
+      columns.Add(new("Time incl (ms)", func => $"{func.Weight.TotalMilliseconds}", true,
+                      isExcelHighlighted: true));
+      columns.Add(new("Time incl (%)", func => func.Percentage.AsPercentageString(2, false), true,
+                      isExcelHighlighted: true));
+    }
+
+    if (FunctionList.View is GridView gridView) {
+      foreach (var gridColumn in gridView.Columns) {
+        if (gridColumn.Header is GridViewColumnHeader {Tag: PerformanceCounter counter} header) {
+          string columnHeader = header.Content?.ToString() ?? counter.Name;
+          columns.Add(new(columnHeader,
+                          func => func.Counters?.FindCounterLabel(counter.Id),
+                          true,
+                          func => func.Counters?.FindCounterValueOrNull(counter.Id),
+                          true));
+        }
+      }
     }
 
     if (alternateNameColumnVisible_) {
-      header += " Mangled name |";
-      separator += "--------------|";
+      columns.Add(new("Mangled name", func => func.AlternateName));
     }
 
-    sb.AppendLine(header);
-    sb.AppendLine(separator);
+    return columns;
+  }
 
-    foreach (var func in list) {
-      if (profileControlsVisible_) {
-        sb.Append($"| {func.Name} | {func.ModuleName} " +
-                  $"| {func.ExclusiveWeight.TotalMilliseconds} " +
-                  $"| {func.ExclusivePercentage.AsPercentageString(2, false)} " +
-                  $"| {func.Weight.TotalMilliseconds} " +
-                  $"| {func.Percentage.AsPercentageString(2, false)} |");
-      }
-      else {
-        sb.Append($"| {func.Name} | {func.ModuleName} |");
-      }
-
-      if (alternateNameColumnVisible_) {
-        sb.AppendLine($" {func.AlternateName} |");
-      }
-      else {
-        sb.AppendLine();
-      }
-    }
-
-    return sb.ToString();
+  private string ExportFunctionListAsMarkdown(List<IRTextFunctionEx> list) {
+    return FunctionListExporting.ExportMarkdown(list, CreateFunctionListExportColumns());
   }
 
   private HtmlNode ExportFunctionListAsHtml(List<IRTextFunctionEx> list) {
-    string TableStyle = @"border-collapse:collapse;border-spacing:0;";
-    string HeaderStyle =
-      @"background-color:#D3D3D3;white-space:nowrap;text-align:left;vertical-align:top;border-color:black;border-style:solid;border-width:1px;overflow:hidden;padding:2px 2px;font-family:Arial, sans-serif;";
-    string CellStyle =
-      @"text-align:left;vertical-align:top;word-wrap:break-word;max-width:300px;overflow:hidden;padding:2px 2px;border-color:black;border-style:solid;border-width:1px;font-family:Arial, sans-serif;";
-
-    var doc = new HtmlDocument();
-    var table = doc.CreateElement("table");
-    table.SetAttributeValue("style", TableStyle);
-
-    var thead = doc.CreateElement("thead");
-    var tbody = doc.CreateElement("tbody");
-    var tr = doc.CreateElement("tr");
-
-    var th = doc.CreateElement("th");
-    th.InnerHtml = "Function";
-    th.SetAttributeValue("style", HeaderStyle);
-    tr.AppendChild(th);
-    th = doc.CreateElement("th");
-    th.InnerHtml = "Module";
-    th.SetAttributeValue("style", HeaderStyle);
-    tr.AppendChild(th);
-    thead.AppendChild(tr);
-
-    if (profileControlsVisible_) {
-      th = doc.CreateElement("th");
-      th.InnerHtml = HttpUtility.HtmlEncode("Time (ms)");
-      th.SetAttributeValue("style", HeaderStyle);
-      tr.AppendChild(th);
-
-      th = doc.CreateElement("th");
-      th.InnerHtml = HttpUtility.HtmlEncode("Time (%)");
-      th.SetAttributeValue("style", HeaderStyle);
-      tr.AppendChild(th);
-
-      th = doc.CreateElement("th");
-      th.InnerHtml = HttpUtility.HtmlEncode("Tine incl (ms)");
-      th.SetAttributeValue("style", HeaderStyle);
-      tr.AppendChild(th);
-
-      th = doc.CreateElement("th");
-      th.InnerHtml = HttpUtility.HtmlEncode("Time incl (%)");
-      th.SetAttributeValue("style", HeaderStyle);
-      tr.AppendChild(th);
-    }
-
-    if (alternateNameColumnVisible_) {
-      th = doc.CreateElement("th");
-      th.InnerHtml = HttpUtility.HtmlEncode("Mangled name");
-      th.SetAttributeValue("style", HeaderStyle);
-      tr.AppendChild(th);
-    }
-
-    table.AppendChild(thead);
-
-    foreach (var func in list) {
-      tr = doc.CreateElement("tr");
-      var td = doc.CreateElement("td");
-      td.InnerHtml = HttpUtility.HtmlEncode(func.Name);
-      td.SetAttributeValue("style", CellStyle);
-      tr.AppendChild(td);
-      td = doc.CreateElement("td");
-      td.InnerHtml = HttpUtility.HtmlEncode(func.ModuleName);
-      td.SetAttributeValue("style", CellStyle);
-      tr.AppendChild(td);
-
-      if (profileControlsVisible_) {
-        string backColor = Utils.BrushToString(func.BackColor);
-        string colorAttr = backColor != null ? $";background-color:{backColor}" : "";
-
-        td = doc.CreateElement("td");
-        td.InnerHtml = HttpUtility.HtmlEncode($"{func.ExclusiveWeight.TotalMilliseconds}");
-        td.SetAttributeValue("style", $"{CellStyle}{colorAttr}");
-        tr.AppendChild(td);
-        td = doc.CreateElement("td");
-        td.InnerHtml = HttpUtility.HtmlEncode($"{func.ExclusivePercentage.AsPercentageString(2, false)}");
-        td.SetAttributeValue("style", $"{CellStyle}{colorAttr}");
-        tr.AppendChild(td);
-        td = doc.CreateElement("td");
-        td.InnerHtml = HttpUtility.HtmlEncode($"{func.Weight.TotalMilliseconds}");
-        td.SetAttributeValue("style", $"{CellStyle}{colorAttr}");
-        tr.AppendChild(td);
-        td = doc.CreateElement("td");
-        td.InnerHtml = HttpUtility.HtmlEncode($"{func.Percentage.AsPercentageString(2, false)}");
-        td.SetAttributeValue("style", $"{CellStyle}{colorAttr}");
-        tr.AppendChild(td);
-      }
-
-      if (alternateNameColumnVisible_) {
-        td = doc.CreateElement("td");
-        td.InnerHtml = HttpUtility.HtmlEncode(func.AlternateName);
-        td.SetAttributeValue("style", CellStyle);
-        tr.AppendChild(td);
-      }
-
-      tbody.AppendChild(tr);
-    }
-
-    table.AppendChild(tbody);
-    doc.DocumentNode.AppendChild(table);
-    return doc.DocumentNode;
+    return FunctionListExporting.ExportHtml(list, CreateFunctionListExportColumns());
   }
 
   private void CopyFunctionListAsHtml(bool allFunctions) {
@@ -2993,81 +2897,53 @@ public partial class SectionPanel : ToolPanelControl, INotifyPropertyChanged {
     int rowId = 1; // First row is for the table column names.
     int maxLineLength = 0;
     var funcList = (ListCollectionView)FunctionList.ItemsSource;
+    var columns = CreateFunctionListExportColumns();
 
     foreach (IRTextFunctionEx func in funcList) {
       rowId++;
-      ws.Cell(rowId, 1).Value = func.Name;
-      ws.Cell(rowId, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
       maxLineLength = Math.Max(func.Name.Length, maxLineLength);
-      ws.Cell(rowId, 2).Value = func.ModuleName;
 
-      if (profileControlsVisible_) {
-        int columnId = 3;
-        ws.Cell(rowId, columnId + 0).Value = $"{func.ExclusiveWeight.TotalMilliseconds}";
-        ws.Cell(rowId, columnId + 1).Value = $"{func.ExclusivePercentage.AsPercentageString(2, false, "")}";
-        ws.Cell(rowId, columnId + 2).Value = $"{func.Weight.TotalMilliseconds}";
-        ws.Cell(rowId, columnId + 3).Value = $"{func.Percentage.AsPercentageString(2, false, "")}";
+      for (int columnId = 0; columnId < columns.Count; columnId++) {
+        var column = columns[columnId];
+        var cell = ws.Cell(rowId, columnId + 1);
 
-        if (func.BackColor != null && func.BackColor is SolidColorBrush colorBrush) {
-          var color = XLColor.FromArgb(colorBrush.Color.A, colorBrush.Color.R, colorBrush.Color.G, colorBrush.Color.B);
-          ws.Cell(rowId, 1).Style.Fill.BackgroundColor = color;
-          ws.Cell(rowId, 2).Style.Fill.BackgroundColor = color;
-          ws.Cell(rowId, columnId + 0).Style.Fill.BackgroundColor = color;
-          ws.Cell(rowId, columnId + 1).Style.Fill.BackgroundColor = color;
-          ws.Cell(rowId, columnId + 2).Style.Fill.BackgroundColor = color;
-          ws.Cell(rowId, columnId + 3).Style.Fill.BackgroundColor = color;
+        if (column.IsNumeric) {
+          double? value = column.NumericValue(func);
+
+          if (value.HasValue) {
+            cell.Value = value.Value;
+          }
+        }
+        else {
+          cell.Value = column.TextValue(func) ?? string.Empty;
         }
 
-        if (alternateNameColumnVisible_) {
-          ws.Cell(rowId, columnId + 4).Value = func.AlternateName;
+        if (columnId == 0) {
+          cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
+        }
+
+        if (column.IsExcelHighlighted &&
+            func.BackColor is SolidColorBrush colorBrush) {
+          cell.Style.Fill.BackgroundColor =
+            XLColor.FromArgb(colorBrush.Color.A, colorBrush.Color.R, colorBrush.Color.G, colorBrush.Color.B);
         }
       }
     }
 
-    var firstCell = ws.Cell(1, 1);
-    var lastCell = ws.LastCellUsed();
-    var range = ws.Range(firstCell.Address, lastCell.Address);
-    var table = range.CreateTable();
-    table.Theme = XLTableTheme.None;
-
-    foreach (var cell in table.HeadersRow().Cells()) {
-      if (cell.Address.ColumnNumber == 1) {
-        cell.Value = "Function";
-      }
-      else if (cell.Address.ColumnNumber == 2) {
-        cell.Value = "Module";
-      }
-      else if (profileControlsVisible_ && cell.Address.ColumnNumber - 3 <= 3) {
-        switch (cell.Address.ColumnNumber - 3) {
-          case 0: {
-            cell.Value = "Time (ms)";
-            break;
-          }
-          case 1: {
-            cell.Value = "Time (%)";
-            break;
-          }
-          case 2: {
-            cell.Value = "Time incl (ms)";
-            break;
-          }
-          case 3: {
-            cell.Value = "Time incl (%)";
-            break;
-          }
-        }
-      }
-      else if (alternateNameColumnVisible_) {
-        cell.Value = "Mangled name";
-      }
-
+    for (int columnId = 0; columnId < columns.Count; columnId++) {
+      var cell = ws.Cell(1, columnId + 1);
+      cell.Value = columns[columnId].Header;
       cell.Style.Font.Bold = true;
       cell.Style.Fill.BackgroundColor = XLColor.LightGray;
     }
 
-    for (int i = 1; i <= 1; i++) {
-      ws.Column(i).AdjustToContents((double)1, Math.Min(50, maxLineLength));
-    }
+    var firstCell = ws.Cell(1, 1);
+    var lastCell = ws.Cell(Math.Max(1, rowId), columns.Count);
+    var range = ws.Range(firstCell.Address, lastCell.Address);
+    var table = range.CreateTable();
+    table.Theme = XLTableTheme.None;
+
+    ws.Column(1).AdjustToContents((double)1, Math.Min(50, maxLineLength));
 
     for (int i = 2; i <= lastCell.Address.ColumnNumber; i++) {
       ws.Column(i).AdjustToContents();
